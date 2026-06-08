@@ -25,13 +25,18 @@ With over 10 hours of data for each subject, we expect to have sufficient data f
 
 The number of subjects, however, may limit our analysis. The sample of only 9 subjects (all of whom are in the age range of 23-31 years, and only one of whom is female) is likely insufficient to model the variation in physical activity metrics among the population of smartwatch users. This may mean we should focus on building a model which is trained on a set of each individual's data, rather than a general model which applies to all users. This would require the user to calibrate their personal device by manually classifying activities on its first use.
 
+# Blinding Strategy:
+
+Blind by both patient and time period.
+
 # KPI Definition
 
 The key performance indicators for this project, in order of importance, are:
 
 * Accuracy of classification
-    * Does the model accurately classify physical activities?
+    * Does the model accurately classify physical activities?(Confusion matrix, Accuracy score, per person accuracy)
 * Classification speed
     * How many samples are required to classify an activity?
 * Computational efficiency
     * How much of a smartwatch's computational resources will this model require?
+    * What are the mimimum data features needed to tell the activity apart and still keep its accuracy?
