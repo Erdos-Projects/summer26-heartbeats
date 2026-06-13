@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 def get_activityMap():
 
@@ -67,7 +68,7 @@ def load_subject(subject_num):
 
     return df_raw
 
-def extract_intervals(subject_num,df_intervals,verbose=False):
+def extract_intervals(subject_num,df_intervals):
     
     df_raw = load_subject(subject_num)
 
@@ -78,7 +79,6 @@ def extract_intervals(subject_num,df_intervals,verbose=False):
     a = a[1:]
 
     #set start time and activity ID for first interval
-    act_ind = 0
     t1 = df_raw['timestamp'][0]
     activity = df_raw['activity_id'][0]
 
@@ -88,10 +88,10 @@ def extract_intervals(subject_num,df_intervals,verbose=False):
         t2 = df_raw['timestamp'][i-1]
         #write interval to dataframe
         df_add = pd.DataFrame.from_records([{'activity_id':activity,
-                                                                            'subject_id':subject_num,
-                                                                            'length':t2-t1,
-                                                                            't1':t1,
-                                                                            't2':t2}])
+                                            'subject_id':subject_num,
+                                            'length':t2-t1,
+                                            't1':t1,
+                                            't2':t2}])
 
         df_intervals = pd.concat([df_intervals, df_add], ignore_index=True)
         
@@ -102,26 +102,38 @@ def extract_intervals(subject_num,df_intervals,verbose=False):
     #close and write final interval
     t2 = df_raw.tail(1)['timestamp'].values[0]
     df_add = pd.DataFrame.from_records([{'activity_id':activity,
-                                                                        'subject_id':subject_num,
-                                                                        'length':t2-t1,
-                                                                        't1':t1,
-                                                                        't2':t2}])
+                                        'subject_id':subject_num,
+                                        'length':t2-t1,
+                                        't1':t1,
+                                        't2':t2}])
     df_intervals = pd.concat([df_intervals, df_add], ignore_index=True)
     
     return df_intervals
 
-def intervalStats_activity(df_intervals,activity_id):
-    #in progress
+def interval_stats(df_intervals,activity_id):
+    #function to print simple statistics of activity intervals
+    'df_intervals: dataframe of activity intervals, as created by extract_intervals (pandas.DataFrame)'
+    'activity_id: numerical ID of activity to print stats for (int)'
 
     activity_map = get_activityMap()
     activity = activity_map[activity_id]
     print('Interval statistics for '+activity+':')
 
     df_select = df_intervals[df_intervals['activity_id']==activity_id]
+    lengths = df_select['length'].values
 
-
-
-
-def intervalStats_subject():
-    #in progress
-    pass
+    num = len(lengths)
+    print('Number of intervals: '+str(num))
+    if num != 0:
+        maxTime = np.max(lengths)
+        minTime = np.min(lengths)
+        meanTime = np.mean(lengths)
+        print('Max time (s): '+str(maxTime))
+        print('Min time (s): '+str(minTime))
+        print('Mean time (s): '+str(meanTime))
+    else:
+        maxTime = None
+        minTime = None
+        meanTime = None
+    
+    return (num,maxTime,minTime,meanTime)
