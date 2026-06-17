@@ -33,7 +33,7 @@ def get_pamap2_headers():
             
     return headers
 
-def load_subject(subject_num):
+def load_subject(subject_num, folder_path='../data/PAMAP2_Dataset/Protocol/'):
 
     headers = get_pamap2_headers()
     print(f"Total structured columns generated: {len(headers)}")
@@ -41,7 +41,7 @@ def load_subject(subject_num):
 
     # Diagnostic Phase
 
-    file_path = '../data/PAMAP2_Dataset/Protocol/subject'+subject_num+'.dat'
+    file_path = f"{folder_path}subject{subject_num}.dat"
 
     print("Reading from "+file_path)
 
@@ -68,9 +68,9 @@ def load_subject(subject_num):
 
     return df_raw
 
-def extract_intervals(subject_num,df_intervals):
+def extract_intervals(subject_num:int, df_intervals:pd.DataFrame, folder_path:str='../data/PAMAP2_Dataset/Protocol/')->pd.DataFrame:
     
-    df_raw = load_subject(subject_num)
+    df_raw = load_subject(subject_num, folder_path)
 
     #find where activity ID changes to divide intervals
     df_raw['activity_change'] = df_raw['activity_id'].diff()
