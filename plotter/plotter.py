@@ -93,8 +93,16 @@ def get_segment(df, activity, start, seconds, activity_interval=0):
 
 
 def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
-                  start=10, seconds=10, magnitude=False, activity_interval=0):
-    df = load_subject(subject)
+                  start=10, seconds=10, magnitude=False, activity_interval=0,df=None):
+    
+    # input desired dataframe as df, or leave as None and input subject ID for automatic read.
+    
+    if type(df)!=pd.DataFrame:
+        df = load_subject(subject)
+        print('No input dataframe! Reading data for subject '+subject+'.')
+    else:
+        print('Using input dataframe!')
+
     segment = get_segment(df, activity, start, seconds, activity_interval)
 
     if segment is None:
@@ -120,11 +128,21 @@ def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
     plt.legend()
     plt.show()
 
+    return segment
+
 
 def plot_activity_multi(subject="101", activity="walking",
                         sensors=("hand_acc16", "chest_acc16"),
-                        start=10, seconds=10, magnitude=False):
-    df = load_subject(subject)
+                        start=10, seconds=10, magnitude=False,df=None):
+    
+    # input desired dataframe as df, or leave as None and input subject ID for automatic read.
+    
+    if type(df)!=pd.DataFrame:
+        df = load_subject(subject)
+        print('No input dataframe! Reading data for subject '+subject+'.')
+    else:
+        print('Using input dataframe!')
+
     segment = get_segment(df, activity, start, seconds)
 
     if segment is None:
@@ -189,13 +207,19 @@ def plot_subjects_multi(subjects=("101", "102"), activity="walking",
     plt.show()
 
 
-def plot_timeseries(subject="101", columns=("heart_rate",), start=None, end=None):
+def plot_timeseries(subject="101", columns=("heart_rate",), start=None, end=None, df=None):
     # Plot any column(s) straight against the timestamp, ignoring activity labels.
     # start/end are timestamps in seconds; leave as None for the whole recording.
+    # input desired dataframe as df, or leave as None and input subject ID for automatic read.
     if isinstance(columns, str):
         columns = [columns]
 
-    df = load_subject(subject)
+    if type(df)!=pd.DataFrame:
+        df = load_subject(subject)
+        print('No input dataframe! Reading data for subject '+subject+'.')
+    else:
+        print('Using input dataframe!')
+
     if start is not None:
         df = df[df["timestamp"] >= start]
     if end is not None:
