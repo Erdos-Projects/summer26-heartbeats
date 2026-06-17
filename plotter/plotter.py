@@ -55,7 +55,7 @@ def load_subject(subject):
     return df
 
 
-def get_segment(df, activity, start, seconds):
+def get_segment(df, activity, start, seconds, activity_interval=0):
     if activity not in NAME_TO_ID:
         print(f"Unknown activity '{activity}'.")
         return None
@@ -67,22 +67,35 @@ def get_segment(df, activity, start, seconds):
         print("Activities present:", sorted(df["activity_id"].unique()))
         return None
 
-    # start is measured in seconds from the beginning of this activity.
+    # An activity can occur in several separate intervals (e.g. the stairs are
+    # done twice). Split the labelled rows on gaps in the row index and use one
+    # interval, so a window never stitches across the gap between two intervals.
+    positions = activity_rows.index.to_numpy()
+    breaks = np.where(np.diff(positions) > 1)[0] + 1
+    intervals = np.split(np.arange(len(activity_rows)), breaks)
+
+    if activity_interval >= len(intervals):
+        print(f"{activity} has {len(intervals)} interval(s); interval {activity_interval} does not exist.")
+        return None
+
+    interval_rows = activity_rows.iloc[intervals[activity_interval]]
+
+    # start is measured in seconds from the beginning of this interval.
     start_row = start * SAMPLE_RATE
     end_row = start_row + seconds * SAMPLE_RATE
-    segment = activity_rows.iloc[start_row:end_row]
+    segment = interval_rows.iloc[start_row:end_row]
 
     if len(segment) == 0:
-        print(f"The window (start={start}s) is past the end of the {activity} data.")
+        print(f"The window (start={start}s) is past the end of this {activity} interval.")
         return None
 
     return segment
 
 
 def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
-                  start=0, seconds=10, magnitude=False):
+                  start=10, seconds=10, magnitude=False, activity_interval=0):
     df = load_subject(subject)
-    segment = get_segment(df, activity, start, seconds)
+    segment = get_segment(df, activity, start, seconds, activity_interval)
 
     if segment is None:
         return
@@ -110,7 +123,7 @@ def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
 
 def plot_activity_multi(subject="101", activity="walking",
                         sensors=("hand_acc16", "chest_acc16"),
-                        start=0, seconds=10, magnitude=False):
+                        start=10, seconds=10, magnitude=False):
     df = load_subject(subject)
     segment = get_segment(df, activity, start, seconds)
 
@@ -143,7 +156,7 @@ def plot_activity_multi(subject="101", activity="walking",
 
 
 def plot_subjects_multi(subjects=("101", "102"), activity="walking",
-                        sensor="hand_acc16", starts=0, seconds=10,
+                        sensor="hand_acc16", starts=10, seconds=10,
                         magnitude=False):
     # starts may be one value shared by everyone or one value per subject.
     if np.isscalar(starts):
@@ -176,6 +189,31 @@ def plot_subjects_multi(subjects=("101", "102"), activity="walking",
     plt.show()
 
 
+def plot_timeseries(subject="101", columns=("heart_rate",), start=None, end=None):
+    # Plot any column(s) straight against the timestamp, ignoring activity labels.
+    # start/end are timestamps in seconds; leave as None for the whole recording.
+    if isinstance(columns, str):
+        columns = [columns]
+
+    df = load_subject(subject)
+    if start is not None:
+        df = df[df["timestamp"] >= start]
+    if end is not None:
+        df = df[df["timestamp"] <= end]
+
+    plt.figure(figsize=(12, 5))
+    for col in columns:
+        # Drop gaps so sparsely-sampled channels (e.g. heart_rate) draw cleanly.
+        series = df[["timestamp", col]].dropna()
+        plt.plot(series["timestamp"], series[col], label=col)
+
+    plt.xlabel("timestamp (seconds)")
+    plt.ylabel("value")
+    plt.title(f"subject {subject}")
+    plt.legend()
+    plt.show()
+
+
 def compute_spectrum(values, sample_rate=SAMPLE_RATE):
     # Interpolate missing values so the FFT still sees evenly spaced samples.
     clean = pd.Series(values).interpolate().bfill().ffill().to_numpy()
@@ -188,9 +226,9 @@ def compute_spectrum(values, sample_rate=SAMPLE_RATE):
 
 
 def plot_spectrum(subject="101", activity="walking", sensor="hand_acc16",
-                  start=0, seconds=10, max_freq=15):
+                  start=10, seconds=10, activity_interval=0, max_freq=15):
     df = load_subject(subject)
-    segment = get_segment(df, activity, start, seconds)
+    segment = get_segment(df, activity, start, seconds, activity_interval)
 
     if segment is None:
         return
@@ -210,6 +248,35 @@ def plot_spectrum(subject="101", activity="walking", sensor="hand_acc16",
     plt.show()
 
 
+def plot_spectrum_multi(subjects=("101", "102"), activity="walking",
+                        sensor="hand_acc16", starts=10, seconds=10, max_freq=15):
+    # Frequency content of one sensor across several participants, one panel each.
+    # starts may be one value shared by everyone or one value per subject.
+    if np.isscalar(starts):
+        starts = [starts] * len(subjects)
+
+    fig, axes = plt.subplots(1, len(subjects), figsize=(6 * len(subjects), 5),
+                             sharex=True)
+
+    for ax, subject, start in zip(np.atleast_1d(axes), subjects, starts):
+        segment = get_segment(load_subject(subject), activity, start, seconds)
+        if segment is None:
+            continue
+
+        for axis in "xyz":
+            freqs, spectrum = compute_spectrum(segment[f"{sensor}_{axis}"].to_numpy())
+            ax.plot(freqs, spectrum, label=axis)
+
+        ax.set_xlim(0, max_freq)
+        ax.set_xlabel("frequency (Hz)")
+        ax.set_ylabel("strength")
+        ax.set_title(f"subject {subject}")
+        ax.legend()
+
+    fig.suptitle(f"Frequency content of {sensor} during {activity}")
+    plt.show()
+
+
 if __name__ == "__main__":
     plot_activity("101", "lying")
     plot_activity("101", "running")
@@ -220,5 +287,9 @@ if __name__ == "__main__":
     plot_activity_multi("101", "running", sensors=("hand_acc16", "ankle_acc16"))
     plot_subjects_multi(("101", "102"), "walking", starts=(0, 30))
 
+    plot_timeseries("101", "heart_rate")                            # whole-recording heartbeat
+
     plot_spectrum("101", "running")
     plot_spectrum("101", "lying")
+
+    plot_spectrum_multi(("101", "102"), "running")                 # FFT across subjects
