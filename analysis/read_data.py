@@ -49,7 +49,7 @@ def load_subject(subject_num, folder_path='../PAMAP2_Dataset/Protocol/'):
 
     print("Loading raw subject file (this might take a few seconds because it is a massive telemetry file)...")
     # We use sep='\s+' because the text file uses variable numbers of spaces to separate numbers
-    df_raw = pd.read_csv(file_path, sep='\s+', header=None)
+    df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
     df_raw.columns = headers
 
     print(f"\n--- RAW DATA DIAGNOSTICS FOR SUBJECT "+subject_num+" ---")
@@ -150,7 +150,7 @@ def interval_stats(df_intervals,activity_id):
 
 def interp_data(df_inpt:pd.DataFrame,t_window=3,columns=None):
 
-    # df_inpt: input dataframe in which we want to interpolate
+    # df_inpt: input dataframe in which we want to. pass in the original dataframe without any segmenting, else the interpolation bounds could be incorrect
     # t_window: consecutive NaNs over intervals smaller than this window (in seconds) will be interpolated
     # columns: list of columns within which to interpolate. default inteprolates in all columns, except heart rate
 
@@ -159,6 +159,8 @@ def interp_data(df_inpt:pd.DataFrame,t_window=3,columns=None):
 
     if columns == None:
         columns = list(df.columns.values)
+    else:
+        columns = columns.copy()
 
     # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
     # skip for now, implement here or elsewhere when we decide how to proceed

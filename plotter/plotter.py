@@ -96,6 +96,7 @@ def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
                   start=10, seconds=10, magnitude=False, activity_interval=0,df=None):
     
     # input desired dataframe as df, or leave as None and input subject ID for automatic read.
+    # when manually inputting df, set subject parameter with desired title.
     
     if type(df)!=pd.DataFrame:
         df = load_subject(subject)
@@ -136,6 +137,7 @@ def plot_activity_multi(subject="101", activity="walking",
                         start=10, seconds=10, magnitude=False,df=None):
     
     # input desired dataframe as df, or leave as None and input subject ID for automatic read.
+    # when manually inputting df, set subject parameter with desired title
     
     if type(df)!=pd.DataFrame:
         df = load_subject(subject)
@@ -177,6 +179,7 @@ def plot_subjects_multi(subjects=("101", "102"), activity="walking",
                         sensor="hand_acc16", starts=10, seconds=10,
                         magnitude=False):
     # starts may be one value shared by everyone or one value per subject.
+
     if np.isscalar(starts):
         starts = [starts] * len(subjects)
 
@@ -211,6 +214,8 @@ def plot_timeseries(subject="101", columns=("heart_rate",), start=None, end=None
     # Plot any column(s) straight against the timestamp, ignoring activity labels.
     # start/end are timestamps in seconds; leave as None for the whole recording.
     # input desired dataframe as df, or leave as None and input subject ID for automatic read.
+    # when manually inputting df, set subject parameter with desired title
+
     if isinstance(columns, str):
         columns = [columns]
 
