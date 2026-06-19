@@ -2,9 +2,11 @@ from tracemalloc import start
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+from itertools import groupby
+from operator import itemgetter
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5):
+    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,max_interpLength=0.1,verbose=True):
             """
             Initializes the data pipeline reader.
             
@@ -12,12 +14,16 @@ class HeartbeatDataProcessor:
             - file_path (str): Path to the df_intervals CSV data.
             - window_size (int): Number of consecutive intervals per training chunk.
             - step_size (int): How far the window slides forward (enables overlapping).
+            - max_interpLength (flt): max length of NaNs in seconds to interpolate
+            - verbose (bool): toggle print statements
             """
             self.folder_path =   folder_path
             self.filtered_df_path = filtered_df_path
             self.window_size = window_size
             self.step_size = step_size
+            self.max_interpLength = max_interpLength
             self.boundary_cut = boundary_cut
+            self.verbose = verbose
             # Initialize internal storage and stateful scaler
             self.df_filtered = None
             self.filtered_index = None
@@ -38,6 +44,24 @@ class HeartbeatDataProcessor:
         for subject_num in subject_array:
             file_path = f"{self.folder_path}subject{subject_num}.dat"
             df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
+
+            headers = ['timestamp', 'activity_id', 'heart_rate']
+            
+            imu_features = [
+                'temp', 
+                'acc16_x', 'acc16_y', 'acc16_z', 
+                'acc6_x', 'acc6_y', 'acc6_z', 
+                'gyro_x', 'gyro_y', 'gyro_z', 
+                'mag_x', 'mag_y', 'mag_z', 
+                'orient_w', 'orient_x', 'orient_y', 'orient_z'
+            ]
+            
+            for body_part in ['hand', 'chest', 'ankle']:
+                for feature in imu_features:
+                    headers.append(f"{body_part}_{feature}")
+
+            df_raw.columns = headers
+
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
             #interplote code should be a separate function under class and should be applied here on df_raw
@@ -64,7 +88,8 @@ class HeartbeatDataProcessor:
 
                     self.subject_segment_dict[subject_num].append(chunk)
             #print(self.subject_segment_dict[subject_num][0])
-            print("successfully loaded subject",subject_num)
+            if self.verbose:
+                print("successfully loaded subject",subject_num)
         # 4. Combine all chunks into a single DataFrame
         self.df_filtered  = pd.concat(self.subject_segment_dict[subject_num],ignore_index=True)
 
@@ -76,8 +101,47 @@ class HeartbeatDataProcessor:
             return self
 
     def _interpolate_df(self,df_raw):
-            #interplote code should be a separate function under class and should be applied here on df_raw
-            return df_raw
+
+        # columns = list(df_raw.columns.values)
+
+        # # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
+        # # skip for now, implement here or elsewhere when we decide how to proceed
+
+        # columns.remove('timestamp')
+        # columns.remove('heart_rate')
+        # columns.remove('activity_id')
+
+        # for column in columns:
+
+        #     # find which rows are NaN
+        #     null_search = df_raw[column].isnull()
+        #     null_list = null_search[null_search].index.values
+
+        #     if len(null_list) != 0:
+        #         i = null_list[0]
+        #         # group NaN rows by consecutive sequences
+        #         for k, g in groupby(enumerate(null_list), lambda x: x[0]-x[1]):
+        #             n_set = list(map(itemgetter(1), g))
+        #             # skip NaNs at the beginning or end of sequence
+        #             if n_set[0] == df_raw.index.values[0] or n_set[-1] == df_raw.index.values[-1]:
+        #                 pass
+        #             elif df_raw['timestamp'][n_set[-1]] - df_raw['timestamp'][n_set[0]] < self.max_interpLength:
+        #                 #get values for points before and after missing data
+        #                 'TODO: benchmark performance vs pandas interp method and consider higher order interp'
+        #                 n1 = n_set[0]-1
+        #                 n2 = n_set[-1]+1
+        #                 t1 = df_raw['timestamp'][n1]
+        #                 t2 = df_raw['timestamp'][n2]
+        #                 y1 = df_raw[column][n1]
+        #                 y2 = df_raw[column][n2]
+        #                 #slope for interpolation
+        #                 m = (y2-y1)/(t2-t1)
+
+        #                 # calculate and insert interpolated values
+        #                 tvals = np.array(df_raw.loc[n_set]['timestamp'].values)
+        #                 df_raw.loc[n_set,column] = y1 + m*(tvals - t1)
+
+        return df_raw
 
     def _filter_df(self,df_raw):
             #filter function should be a separate function under class and should be applied here after interplote on df_raw
