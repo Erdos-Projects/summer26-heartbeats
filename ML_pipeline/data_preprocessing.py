@@ -4,6 +4,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from itertools import groupby
 from operator import itemgetter
+from functools import partial
 
 class HeartbeatDataProcessor:
     def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,max_interpLength=0.1,verbose=True):
@@ -80,8 +81,55 @@ class HeartbeatDataProcessor:
         # df_combined[['x', 'y', 'z']] = self.scaler.fit_transform(df_combined[['x', 'y', 'z']])
 
     def extract_features(self,window_df):
-            # Extract features from the windowed data
-            return self
+        # Extract features from the windowed data
+
+        # is it bad form to not pass self into object methods?
+        # since I am preparing to hand these off to agg, the extra argument of self causes errors
+        def _peak2peak_amp(window_df):
+            return window_df.agg(max) - window_df.agg(min)
+        def _sum_of_area(window_df):
+            return window_df.agg(abs).agg(np.sum)
+        def _signal_mean_energy(window_df):
+            #may be a neater way to do this
+            df_sq = window_df**2
+            return df_sq.agg('mean')
+
+        # passing in three types of functions to agg:
+        # - strings are pandas dataframe methods
+        # - stats. functions are from scipy
+        # - and a few custom-defined functions (above) for things I couldn't find in existing code
+        'TODO:'
+        '* fix hmean NaNs'
+        ' - the harmonic mean is only defined for positive inputs'
+        ' - our data has negative values, do they take abs() in the paper?'
+        '* connect to pipeline'
+        ' - where should we be passing segments in?'
+        ' - what should we do with the feature dataframes for each segment?'
+        '* check accuracy'
+        ' - I did very short checks to make sure the results make some sense'
+        ' - a more thorough checking that these are the desired features would be good'
+        '* consider NaN approach'
+        ' - currently omitting NaNs'
+        ' - would be best if we can confidently increase the max interp length and get rid of all NaNs'
+        '* rename features in output'
+        ' - agg names features by the function automatically'
+        ' - you can name them manually, but the input syntax gets messy with many functions and aruments'
+        ' - would be nice to figure out the syntax, or manually rename things to be slightly more readable in the output feature df'
+        features = window_df.agg(func=['mean',
+                                stats.hmean,
+                                'std',
+                                'max',
+                                'min',
+                                _peak2peak_amp,
+                                'median',
+                                partial(stats.median_abs_deviation,nan_policy='omit'),
+                                partial(stats.iqr,nan_policy='omit'),
+                                _sum_of_area,
+                                _signal_mean_energy,
+                                'skew',
+                                'kurtosis'])
+        
+        return features
 
     def _interpolate_df(self,df_raw):
 
