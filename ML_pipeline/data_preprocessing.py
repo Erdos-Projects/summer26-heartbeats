@@ -45,23 +45,6 @@ class HeartbeatDataProcessor:
             file_path = f"{self.folder_path}subject{subject_num}.dat"
             df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
 
-            headers = ['timestamp', 'activity_id', 'heart_rate']
-            
-            imu_features = [
-                'temp', 
-                'acc16_x', 'acc16_y', 'acc16_z', 
-                'acc6_x', 'acc6_y', 'acc6_z', 
-                'gyro_x', 'gyro_y', 'gyro_z', 
-                'mag_x', 'mag_y', 'mag_z', 
-                'orient_w', 'orient_x', 'orient_y', 'orient_z'
-            ]
-            
-            for body_part in ['hand', 'chest', 'ankle']:
-                for feature in imu_features:
-                    headers.append(f"{body_part}_{feature}")
-
-            df_raw.columns = headers
-
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
             #interplote code should be a separate function under class and should be applied here on df_raw
@@ -102,44 +85,44 @@ class HeartbeatDataProcessor:
 
     def _interpolate_df(self,df_raw):
 
-        # columns = list(df_raw.columns.values)
+        columns = list(df_raw.columns.values)
 
-        # # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
-        # # skip for now, implement here or elsewhere when we decide how to proceed
+        # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
+        # skip for now, implement here or elsewhere when we decide how to proceed
 
-        # columns.remove('timestamp')
-        # columns.remove('heart_rate')
-        # columns.remove('activity_id')
+        columns.remove(0)
+        columns.remove(1)
+        columns.remove(2)
 
-        # for column in columns:
+        for column in columns:
 
-        #     # find which rows are NaN
-        #     null_search = df_raw[column].isnull()
-        #     null_list = null_search[null_search].index.values
+            # find which rows are NaN
+            null_search = df_raw[column].isnull()
+            null_list = null_search[null_search].index.values
 
-        #     if len(null_list) != 0:
-        #         i = null_list[0]
-        #         # group NaN rows by consecutive sequences
-        #         for k, g in groupby(enumerate(null_list), lambda x: x[0]-x[1]):
-        #             n_set = list(map(itemgetter(1), g))
-        #             # skip NaNs at the beginning or end of sequence
-        #             if n_set[0] == df_raw.index.values[0] or n_set[-1] == df_raw.index.values[-1]:
-        #                 pass
-        #             elif df_raw['timestamp'][n_set[-1]] - df_raw['timestamp'][n_set[0]] < self.max_interpLength:
-        #                 #get values for points before and after missing data
-        #                 'TODO: benchmark performance vs pandas interp method and consider higher order interp'
-        #                 n1 = n_set[0]-1
-        #                 n2 = n_set[-1]+1
-        #                 t1 = df_raw['timestamp'][n1]
-        #                 t2 = df_raw['timestamp'][n2]
-        #                 y1 = df_raw[column][n1]
-        #                 y2 = df_raw[column][n2]
-        #                 #slope for interpolation
-        #                 m = (y2-y1)/(t2-t1)
+            if len(null_list) != 0:
+                i = null_list[0]
+                # group NaN rows by consecutive sequences
+                for k, g in groupby(enumerate(null_list), lambda x: x[0]-x[1]):
+                    n_set = list(map(itemgetter(1), g))
+                    # skip NaNs at the beginning or end of sequence
+                    if n_set[0] == df_raw.index.values[0] or n_set[-1] == df_raw.index.values[-1]:
+                        pass
+                    elif df_raw[0][n_set[-1]] - df_raw[0][n_set[0]] < self.max_interpLength:
+                        #get values for points before and after missing data
+                        'TODO: benchmark performance vs pandas interp method'
+                        n1 = n_set[0]-1
+                        n2 = n_set[-1]+1
+                        t1 = df_raw[0][n1]
+                        t2 = df_raw[0][n2]
+                        y1 = df_raw[column][n1]
+                        y2 = df_raw[column][n2]
+                        #slope for interpolation
+                        m = (y2-y1)/(t2-t1)
 
-        #                 # calculate and insert interpolated values
-        #                 tvals = np.array(df_raw.loc[n_set]['timestamp'].values)
-        #                 df_raw.loc[n_set,column] = y1 + m*(tvals - t1)
+                        # calculate and insert interpolated values
+                        tvals = np.array(df_raw.loc[n_set][0].values)
+                        df_raw.loc[n_set,column] = y1 + m*(tvals - t1)
 
         return df_raw
 
