@@ -99,6 +99,10 @@ class HeartbeatDataProcessor:
         # - stats. functions are from scipy
         # - and a few custom-defined functions (above) for things I couldn't find in existing code
         'TODO:'
+        '* add Pearson Correlation Coefficient'
+        ' - this is between pairs of axes, so should be 9 for each measurement (3 pairs from 3 axes)'
+        ' - how to cleanly implement into features df'
+        ' - only for vector data! not temperature!'
         '* fix hmean NaNs'
         ' - the harmonic mean is only defined for positive inputs'
         ' - our data has negative values, do they take abs() in the paper?'
