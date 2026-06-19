@@ -52,7 +52,7 @@ def load_subject(subject_num, folder_path='../PAMAP2_Dataset/Protocol/'):
     df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
     df_raw.columns = headers
 
-    print(f"\n--- RAW DATA DIAGNOSTICS FOR SUBJECT "+subject_num+" ---")
+    print(f"\n--- RAW DATA DIAGNOSTICS FOR SUBJECT {subject_num} ---")
     print(f"Total raw rows: {len(df_raw):,}")
     print(f"Total continuous tracking time: {df_raw['timestamp'].max() / 60:.2f} minutes")
 
@@ -76,7 +76,6 @@ def extract_intervals(subject_num:int, df_intervals:pd.DataFrame, folder_path:st
 
     #find where activity ID changes to divide intervals
     df_raw['activity_change'] = df_raw['activity_id'].diff()
-    (df_raw['activity_change'] != 0).index
     a = df_raw.loc[df_raw['activity_change'] != 0.0].index.tolist()
     a = a[1:]
 
