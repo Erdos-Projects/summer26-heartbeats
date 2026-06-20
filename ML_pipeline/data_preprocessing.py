@@ -104,8 +104,9 @@ class HeartbeatDataProcessor:
             mask[i] = (grp.groupby(i)['ones'].transform('count') <= self.interp_limit) | df_raw[i].notnull()
 
         missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
-        print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
-        print('Interpolating selected columns...')
+        if self.verbose:
+            print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
+            print('Interpolating selected columns...')
 
         #interpolate!
         df_raw[columns] = df_raw[columns].interpolate(method='index',limit=self.interp_limit,limit_area='inside')
@@ -114,7 +115,8 @@ class HeartbeatDataProcessor:
         df_raw[columns] = df_raw[columns].bfill()[mask]
 
         missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
-        print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
+        if self.verbose:
+            print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
 
         'TODO: test quadratic interpolation for larger gaps'
 
