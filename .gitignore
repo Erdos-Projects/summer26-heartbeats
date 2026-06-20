@@ -1,0 +1,10 @@
+# PAMAP2 dataset (large; download/extract locally, see README)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# scratch
+_verify_features.py
