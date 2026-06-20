@@ -35,7 +35,7 @@ def get_pamap2_headers():
             
     return headers
 
-def load_subject(subject_num, folder_path='../PAMAP2_Dataset/Protocol/'):
+def load_subject(subject_num, folder_path='../data/PAMAP2_Dataset/Protocol/'):
 
     headers = get_pamap2_headers()
     print(f"Total structured columns generated: {len(headers)}")
@@ -212,5 +212,56 @@ def interp_data(df_inpt:pd.DataFrame,t_window=3,columns=None):
         
         missing_pct = df[column].isnull().mean() * 100
         print('Column '+column+' now has '+str(round(missing_pct,2))+'% NaNs!\n')
+
+    return df
+
+
+def interp_data_new(df_inpt:pd.DataFrame,columns=None,t_window=3):
+
+    # df_inpt: input dataframe in which we want to. pass in the original dataframe without any segmenting, else the interpolation bounds could be incorrect
+    # t_window: consecutive NaNs over intervals smaller than this window (in seconds) will be interpolated
+    # columns: list of columns within which to interpolate. default inteprolates in all columns, except heart rate
+
+
+    df = df_inpt.copy() #work on a copy dataframe
+
+    df.set_index('timestamp')
+
+    if columns == None:
+        columns = list(df.columns.values)
+    else:
+        columns = columns.copy()
+
+    # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
+    # skip for now, implement here or elsewhere when we decide how to proceed
+
+    try:
+        columns.remove('timestamp')
+    except ValueError:
+        pass
+    try:
+        columns.remove('heart_rate')
+    except ValueError:
+        pass
+    try:
+        columns.remove('activity_id')
+    except ValueError:
+        pass
+    for column in columns:
+
+ 
+        # find which rows are NaN
+        null_search = df[column].isnull()
+        null_list = null_search[null_search].index.values
+
+        missing_pct = df[column].isnull().mean() * 100
+        #I know there is cleaner string formatting but I forget the syntax and I'm not looking it up now
+        print('Column '+str(column)+' has '+str(round(missing_pct,2))+'% NaNs.')
+        print('Interpolating in '+str(column)+'...')
+
+        df[column] = df[column].interpolate(method='index')
+        
+        missing_pct = df[column].isnull().mean() * 100
+        print('Column '+str(column)+' now has '+str(round(missing_pct,2))+'% NaNs!\n')
 
     return df
