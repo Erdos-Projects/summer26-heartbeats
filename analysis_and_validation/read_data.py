@@ -216,7 +216,7 @@ def interp_data(df_inpt:pd.DataFrame,t_window=3,columns=None):
     return df
 
 
-def interp_data_new(df_inpt:pd.DataFrame,columns=None,t_window=3):
+def interp_data_new(df_inpt:pd.DataFrame,columns=None,limit=10,limit_area=None,nan_bfill=False):
 
     # df_inpt: input dataframe in which we want to. pass in the original dataframe without any segmenting, else the interpolation bounds could be incorrect
     # t_window: consecutive NaNs over intervals smaller than this window (in seconds) will be interpolated
@@ -247,21 +247,24 @@ def interp_data_new(df_inpt:pd.DataFrame,columns=None,t_window=3):
         columns.remove('activity_id')
     except ValueError:
         pass
-    for column in columns:
 
- 
-        # find which rows are NaN
-        null_search = df[column].isnull()
-        null_list = null_search[null_search].index.values
+    #create mask of all entries NOT part of long nan sequences
+    mask = df[columns].copy()
+    grp = ((mask.notnull() != mask.shift().notnull()).cumsum())
+    grp['ones'] = 1
+    for i in columns:
+        mask[i] = (grp.groupby(i)['ones'].transform('count') <= limit) | df[i].notnull()
 
-        missing_pct = df[column].isnull().mean() * 100
-        #I know there is cleaner string formatting but I forget the syntax and I'm not looking it up now
-        print('Column '+str(column)+' has '+str(round(missing_pct,2))+'% NaNs.')
-        print('Interpolating in '+str(column)+'...')
+    missing_pct = df[columns].isnull().to_numpy().flatten().mean() * 100
+    print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
+    print('Interpolating selected columns...')
 
-        df[column] = df[column].interpolate(method='index')
-        
-        missing_pct = df[column].isnull().mean() * 100
-        print('Column '+str(column)+' now has '+str(round(missing_pct,2))+'% NaNs!\n')
+    df[columns] = df[columns].interpolate(method='index',limit=limit,limit_area=limit_area)
 
-    return df
+    #backfill all values except long nan sequences identified by mask
+    df[columns] = df[columns].bfill()[mask]
+
+    missing_pct = df[columns].isnull().to_numpy().flatten().mean() * 100
+    print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
+
+    return df, mask

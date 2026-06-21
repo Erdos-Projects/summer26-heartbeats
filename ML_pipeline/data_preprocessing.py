@@ -88,42 +88,36 @@ class HeartbeatDataProcessor:
     def _interpolate_df(self,df_raw):
 
         columns = list(df_raw.columns.values)
-
-        debug_print = False
         
-
         # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
         # skip for now, implement here or elsewhere when we decide how to proceed
 
-        columns.remove(0)
-        columns.remove(1)
-        columns.remove(2)
+        columns.remove(0) #remove timestamp
+        columns.remove(1) #remove activity id
+        columns.remove(2) #remove heartrate
 
-        # I think the pandas interp can do sets of columns simultaneously, but leaving the loop for now as I do some testing
-        'TODO: consider replacing loop with simultaneous interpolation for a cleaner look'
-        for column in columns:
+        #create mask of all entries NOT part of long nan sequences
+        mask = df_raw[columns].copy()
+        grp = ((mask.notnull() != mask.shift().notnull()).cumsum())
+        for i in columns:
+            mask[i] = (grp.groupby(i).transform('size') <= self.interp_limit) | df_raw[i].notnull()
 
-            # find which rows are NaN
-            missing_pct = df_raw[column].isnull().mean() * 100
-            if debug_print:
-                 print('Column '+str(column)+' has '+str(round(missing_pct,4))+'% NaNs.')
-                 print('linear interp...')
+        missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
+        if self.verbose:
+            print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
+            print('Interpolating selected columns...')
 
-            df_raw[column] = df_raw[column].interpolate(method='index',limit=self.interp_limit)
+        #interpolate!
+        df_raw[columns] = df_raw[columns].interpolate(method='index',limit=self.interp_limit,limit_area='inside')
 
-            missing_pct = df_raw[column].isnull().mean() * 100
-            if debug_print:
-                 print('Column '+str(column)+' has '+str(round(missing_pct,4))+'% NaNs.\n')
+        #backfill all values except long nan sequences identified by mask
+        df_raw[columns] = df_raw[columns].bfill()[mask]
 
-            'TODO: test quadratic interpolation for larger gaps'
-            # if self.verbose:
-            #      print('quadratic interp...')
+        missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
+        if self.verbose:
+            print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
 
-            # df_raw[column] = df_raw[column].interpolate(method='index',limit=100)
-
-            # missing_pct = df_raw[column].isnull().mean() * 100
-            # if self.verbose:
-            #      print('Column '+str(column)+' has '+str(round(missing_pct,4))+'% NaNs.\n')
+        'TODO: test quadratic interpolation for larger gaps'
 
         return df_raw
 
