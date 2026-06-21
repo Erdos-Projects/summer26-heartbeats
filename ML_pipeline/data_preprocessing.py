@@ -99,9 +99,8 @@ class HeartbeatDataProcessor:
         #create mask of all entries NOT part of long nan sequences
         mask = df_raw[columns].copy()
         grp = ((mask.notnull() != mask.shift().notnull()).cumsum())
-        grp['ones'] = 1
         for i in columns:
-            mask[i] = (grp.groupby(i)['ones'].transform('count') <= self.interp_limit) | df_raw[i].notnull()
+            mask[i] = (grp.groupby(i).transform('size') <= self.interp_limit) | df_raw[i].notnull()
 
         missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
         if self.verbose:
