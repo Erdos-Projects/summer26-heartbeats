@@ -47,6 +47,9 @@ class HeartbeatDataProcessor:
             #setting index to timestamp!
             df_raw.set_index(0)
 
+            cols_to_drop = list(range(16, 20)) + list(range(33, 37)) + list(range(50, 54))
+            df_raw = df_raw.drop(cols_to_drop, axis=1)
+
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
             #interplote code should be a separate function under class and should be applied here on df_raw
