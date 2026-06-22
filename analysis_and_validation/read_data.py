@@ -35,7 +35,7 @@ def get_pamap2_headers():
             
     return headers
 
-def load_subject(subject_num, folder_path='../PAMAP2_Dataset/Protocol/'):
+def load_subject(subject_num, folder_path='../data/PAMAP2_Dataset/Protocol/'):
 
     headers = get_pamap2_headers()
     print(f"Total structured columns generated: {len(headers)}")
@@ -214,3 +214,57 @@ def interp_data(df_inpt:pd.DataFrame,t_window=3,columns=None):
         print('Column '+column+' now has '+str(round(missing_pct,2))+'% NaNs!\n')
 
     return df
+
+
+def interp_data_new(df_inpt:pd.DataFrame,columns=None,limit=10,limit_area=None,nan_bfill=False):
+
+    # df_inpt: input dataframe in which we want to. pass in the original dataframe without any segmenting, else the interpolation bounds could be incorrect
+    # t_window: consecutive NaNs over intervals smaller than this window (in seconds) will be interpolated
+    # columns: list of columns within which to interpolate. default inteprolates in all columns, except heart rate
+
+
+    df = df_inpt.copy() #work on a copy dataframe
+
+    df.set_index('timestamp')
+
+    if columns == None:
+        columns = list(df.columns.values)
+    else:
+        columns = columns.copy()
+
+    # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
+    # skip for now, implement here or elsewhere when we decide how to proceed
+
+    try:
+        columns.remove('timestamp')
+    except ValueError:
+        pass
+    try:
+        columns.remove('heart_rate')
+    except ValueError:
+        pass
+    try:
+        columns.remove('activity_id')
+    except ValueError:
+        pass
+
+    #create mask of all entries NOT part of long nan sequences
+    mask = df[columns].copy()
+    grp = ((mask.notnull() != mask.shift().notnull()).cumsum())
+    grp['ones'] = 1
+    for i in columns:
+        mask[i] = (grp.groupby(i)['ones'].transform('count') <= limit) | df[i].notnull()
+
+    missing_pct = df[columns].isnull().to_numpy().flatten().mean() * 100
+    print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
+    print('Interpolating selected columns...')
+
+    df[columns] = df[columns].interpolate(method='index',limit=limit,limit_area=limit_area)
+
+    #backfill all values except long nan sequences identified by mask
+    df[columns] = df[columns].bfill()[mask]
+
+    missing_pct = df[columns].isnull().to_numpy().flatten().mean() * 100
+    print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
+
+    return df, mask

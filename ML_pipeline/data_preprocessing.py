@@ -24,7 +24,7 @@ from read_data import get_pamap2_headers
 
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,max_interpLength=0.1,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',verbose=True):
+    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',verbose=True):
             """
             Initializes the data pipeline reader.
 
@@ -32,7 +32,7 @@ class HeartbeatDataProcessor:
             - file_path (str): Path to the df_intervals CSV data.
             - window_size (int): Number of consecutive intervals per training chunk.
             - step_size (int): How far the window slides forward (enables overlapping).
-            - max_interpLength (flt): max length of NaNs in seconds to interpolate
+            - interp_limit (int): max number of consecutive NaNs to interpolate, default 10 (0.1s at 100Hz)
             - sample_rate (int): sample rate in Hz, used for the frequency-domain STFT.
             - stft_nperseg (int): STFT segment length in samples; the paper leaves it
               unspecified, so this is our choice (clamped to the window length per signal).
@@ -44,7 +44,7 @@ class HeartbeatDataProcessor:
             self.filtered_df_path = filtered_df_path
             self.window_size = window_size
             self.step_size = step_size
-            self.max_interpLength = max_interpLength
+            self.interp_limit = interp_limit
             self.boundary_cut = boundary_cut
             self.sample_rate = sample_rate
             self.stft_nperseg = stft_nperseg
@@ -99,6 +99,8 @@ class HeartbeatDataProcessor:
         for subject_num in subject_array:
             file_path = f"{self.folder_path}subject{subject_num}.dat"
             df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
+            #setting index to timestamp!
+            df_raw.set_index(0)
 
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
@@ -372,43 +374,36 @@ class HeartbeatDataProcessor:
     def _interpolate_df(self,df_raw):
 
         columns = list(df_raw.columns.values)
-
+        
         # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
         # skip for now, implement here or elsewhere when we decide how to proceed
 
-        columns.remove(0)
-        columns.remove(1)
-        columns.remove(2)
+        columns.remove(0) #remove timestamp
+        columns.remove(1) #remove activity id
+        columns.remove(2) #remove heartrate
 
-        for column in columns:
+        #create mask of all entries NOT part of long nan sequences
+        mask = df_raw[columns].copy()
+        grp = ((mask.notnull() != mask.shift().notnull()).cumsum())
+        for i in columns:
+            mask[i] = (grp.groupby(i).transform('size') <= self.interp_limit) | df_raw[i].notnull()
 
-            # find which rows are NaN
-            null_search = df_raw[column].isnull()
-            null_list = null_search[null_search].index.values
+        missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
+        if self.verbose:
+            print('Selected DataFrame columns have '+str(round(missing_pct,4))+'% NaNs.')
+            print('Interpolating selected columns...')
 
-            if len(null_list) != 0:
-                i = null_list[0]
-                # group NaN rows by consecutive sequences
-                for k, g in groupby(enumerate(null_list), lambda x: x[0]-x[1]):
-                    n_set = list(map(itemgetter(1), g))
-                    # skip NaNs at the beginning or end of sequence
-                    if n_set[0] == df_raw.index.values[0] or n_set[-1] == df_raw.index.values[-1]:
-                        pass
-                    elif df_raw[0][n_set[-1]] - df_raw[0][n_set[0]] < self.max_interpLength:
-                        #get values for points before and after missing data
-                        'TODO: benchmark performance vs pandas interp method'
-                        n1 = n_set[0]-1
-                        n2 = n_set[-1]+1
-                        t1 = df_raw[0][n1]
-                        t2 = df_raw[0][n2]
-                        y1 = df_raw[column][n1]
-                        y2 = df_raw[column][n2]
-                        #slope for interpolation
-                        m = (y2-y1)/(t2-t1)
+        #interpolate!
+        df_raw[columns] = df_raw[columns].interpolate(method='index',limit=self.interp_limit,limit_area='inside')
 
-                        # calculate and insert interpolated values
-                        tvals = np.array(df_raw.loc[n_set][0].values)
-                        df_raw.loc[n_set,column] = y1 + m*(tvals - t1)
+        #backfill all values except long nan sequences identified by mask
+        df_raw[columns] = df_raw[columns].bfill()[mask]
+
+        missing_pct = df_raw[columns].isnull().to_numpy().flatten().mean() * 100
+        if self.verbose:
+            print('Selected DataFrame columns now have '+str(round(missing_pct,4))+'% NaNs!\n')
+
+        'TODO: test quadratic interpolation for larger gaps'
 
         return df_raw
 
