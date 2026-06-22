@@ -21,6 +21,9 @@ from functools import partial
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'analysis_and_validation'))
 from read_data import get_pamap2_headers
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from data_filtering import HeartRateFilter
+
 
 class HeartbeatDataProcessor:
     def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',include_amplitude=True,include_frequency=True,verbose=True):
@@ -417,6 +420,10 @@ class HeartbeatDataProcessor:
 
         return df_raw
 
-    def _filter_df(self,df_raw):
-            #filter function should be a separate function under class and should be applied here after interplote on df_raw
-            return df_raw
+    def _filter_df(self, df_raw):
+        # Low-pass filter the motion channels (paper, Section III-A). Heart rate and the
+        # metadata columns are left untouched.
+        signal_filter = HeartRateFilter(kernel_size=5, cutoff=11.0, fs=self.sample_rate, order=5)
+        for column in self.MOTION_AXES:
+            df_raw[column] = signal_filter.fit_transform(df_raw[column]).ravel()
+        return df_raw
