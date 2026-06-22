@@ -24,7 +24,7 @@ from read_data import get_pamap2_headers
 
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',verbose=True):
+    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',include_amplitude=True,include_frequency=True,verbose=True):
             """
             Initializes the data pipeline reader.
 
@@ -38,6 +38,11 @@ class HeartbeatDataProcessor:
               unspecified, so this is our choice (clamped to the window length per signal).
             - stft_noverlap (int): STFT segment overlap in samples; likewise our choice.
             - stft_window (str): STFT window function passed to scipy.signal.stft.
+            - include_amplitude (bool): add the per-sensor amplitude M = sqrt(x^2+y^2+z^2)
+              time-domain features. Cheap; on by default.
+            - include_frequency (bool): add the frequency-domain (STFT magnitude) features for
+              both the axes and the amplitudes. This is the slow step (an STFT per signal per
+              window); set False for a fast time-domain-only run.
             - verbose (bool): toggle print statements
             """
             self.folder_path =   folder_path
@@ -50,6 +55,8 @@ class HeartbeatDataProcessor:
             self.stft_nperseg = stft_nperseg
             self.stft_noverlap = stft_noverlap
             self.stft_window = stft_window
+            self.include_amplitude = include_amplitude
+            self.include_frequency = include_frequency
             self.verbose = verbose
             # Initialize internal storage and stateful scaler
             self.df_filtered = None
@@ -198,10 +205,12 @@ class HeartbeatDataProcessor:
         - window_df (pd.DataFrame): samples for one window, with named PAMAP2 columns.
 
         Returns a pandas Series indexed by "<channel>_<feature>". Following Section III-C,
-        the Table 3 statistics are taken over four streams: the original time-domain
-        channels, the per-sensor amplitude M in the time domain, and the STFT magnitude of
-        both in the frequency domain (those channels carry a "_stft" suffix). The
-        within-sensor axis correlations are added from the time domain.
+        the Table 3 statistics are taken over up to four streams: the original time-domain
+        channels (always), the per-sensor amplitude M in the time domain (if
+        include_amplitude), and the STFT magnitude of both in the frequency domain (if
+        include_frequency; those channels carry a "_stft" suffix). The within-sensor axis
+        correlations are added from the time domain. The returned index therefore depends on
+        the include_amplitude / include_frequency settings.
         """
         # The custom functions below cover features with no direct pandas/scipy name.
         # They take a single column (a Series) because that is what agg hands them.
@@ -292,23 +301,31 @@ class HeartbeatDataProcessor:
             flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
             return flat
 
-        # The four streams of Section III-C: original time domain, amplitude time domain,
-        # and the STFT magnitude of each in the frequency domain. Heart rate is kept only in
-        # the original time domain; it has no triad for an amplitude, and its sparse, low-rate
-        # sampling makes its spectrum meaningless.
+        # The streams of Section III-C. The original time domain is always extracted; the
+        # amplitude and frequency-domain streams are optional (see include_amplitude /
+        # include_frequency in __init__), since the STFT is the slow step. Heart rate is kept
+        # only in the original time domain; it has no triad for an amplitude, and its sparse,
+        # low-rate sampling makes its spectrum meaningless.
         channels = window_df[self.FEATURE_CHANNELS]
-        amplitude = self._amplitude_signals(window_df)
-        axis_spectra = self._stft_magnitude_signals(window_df[self.MOTION_AXES])
-        amplitude_spectra = self._stft_magnitude_signals(amplitude)
+        feature_parts = [_per_channel_features(channels)]
 
-        return pd.concat([
-            _per_channel_features(channels),
-            _per_channel_features(amplitude),
-            _per_channel_features(axis_spectra),
-            _per_channel_features(amplitude_spectra),
-            # Axis correlations are taken in the time domain only.
-            self._axis_correlations(channels),
-        ])
+        # Amplitude M per sensor feeds both the amplitude time-domain features and the
+        # amplitude frequency-domain features, so compute it once if either stream is on.
+        amplitude = None
+        if self.include_amplitude or self.include_frequency:
+            amplitude = self._amplitude_signals(window_df)
+        if self.include_amplitude:
+            feature_parts.append(_per_channel_features(amplitude))
+
+        if self.include_frequency:
+            axis_spectra = self._stft_magnitude_signals(window_df[self.MOTION_AXES])
+            amplitude_spectra = self._stft_magnitude_signals(amplitude)
+            feature_parts.append(_per_channel_features(axis_spectra))
+            feature_parts.append(_per_channel_features(amplitude_spectra))
+
+        # Axis correlations are taken in the time domain only.
+        feature_parts.append(self._axis_correlations(channels))
+        return pd.concat(feature_parts)
 
     def _amplitude_signals(self, window_df):
         """
