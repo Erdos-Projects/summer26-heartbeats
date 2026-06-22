@@ -55,17 +55,18 @@ for location in ["hand", "chest", "ankle"]:
     COLUMNS += imu_cols(location)
 
 
-def load_subject(subject, interpolate=False, max_interp_length=0.1):
+def load_subject(subject, interpolate=False, interp_limit=10):
     # interpolate runs the recording through the ML pipeline's interpolator
-    # (HeartbeatDataProcessor._interpolate_df), which linearly fills NaN gaps shorter than
-    # max_interp_length seconds and leaves longer gaps untouched. The interpolator expects
-    # the unnamed integer columns it sees in the pipeline, so the names are applied after.
+    # (HeartbeatDataProcessor._interpolate_df), which linearly fills runs of up to
+    # interp_limit consecutive NaNs and leaves longer gaps untouched. The interpolator
+    # expects the unnamed integer columns it sees in the pipeline, so the names are applied
+    # after.
     path = f"{DATA_DIR}/subject{subject}.dat"
 
     if interpolate:
         df = pd.read_csv(path, sep=" ", header=None, na_values="NaN")
         processor = HeartbeatDataProcessor(folder_path="", filtered_df_path="",
-                                           max_interpLength=max_interp_length, verbose=False)
+                                           interp_limit=interp_limit, verbose=False)
         df = processor._interpolate_df(df)
         df.columns = COLUMNS
         return df
