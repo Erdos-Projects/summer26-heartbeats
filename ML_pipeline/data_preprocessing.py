@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.signal import stft
-from sklearn.preprocessing import StandardScaler
 from itertools import groupby, combinations
 from operator import itemgetter
 from functools import partial
@@ -58,10 +57,11 @@ class HeartbeatDataProcessor:
             self.include_amplitude = include_amplitude
             self.include_frequency = include_frequency
             self.verbose = verbose
-            # Initialize internal storage and stateful scaler
+            # Initialize internal storage. Feature scaling is intentionally not done here:
+            # it must be fit on the training fold only (inside the model pipeline) to avoid
+            # leakage, so the extractor returns raw, unscaled features.
             self.df_filtered = None
             self.filtered_index = None
-            self.scaler = StandardScaler()
             self.subject_segment_dict = {}
             self.features_df = None
 
@@ -140,9 +140,6 @@ class HeartbeatDataProcessor:
                 print("successfully loaded subject",subject_num)
         # 4. Combine all chunks into a single DataFrame
         self.df_filtered  = pd.concat(self.subject_segment_dict[subject_num],ignore_index=True)
-
-        # 5. Standardize the features
-        # df_combined[['x', 'y', 'z']] = self.scaler.fit_transform(df_combined[['x', 'y', 'z']])
 
     # Remaining work, roughly by urgency:
     # 1. Decide a NaN / zero-variance policy. The features rely on agg skipping NaNs, but a
