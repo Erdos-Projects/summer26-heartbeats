@@ -34,15 +34,15 @@ class HeartbeatDataProcessor:
             - step_size (int): How far the window slides forward (enables overlapping).
             - interp_limit (int): max number of consecutive NaNs to interpolate, default 10 (0.1s at 100Hz)
             - sample_rate (int): sample rate in Hz, used for the frequency-domain STFT.
-            - stft_nperseg (int): STFT segment length in samples; the paper leaves it
+            - stft_nperseg (int): STFT segment length in samples. The paper leaves it
               unspecified, so this is our choice (clamped to the window length per signal).
-            - stft_noverlap (int): STFT segment overlap in samples; likewise our choice.
+            - stft_noverlap (int): STFT segment overlap in samples, likewise our choice.
             - stft_window (str): STFT window function passed to scipy.signal.stft.
             - include_amplitude (bool): add the per-sensor amplitude M = sqrt(x^2+y^2+z^2)
-              time-domain features. Cheap; on by default.
+              time-domain features. Cheap, on by default.
             - include_frequency (bool): add the frequency-domain (STFT magnitude) features for
               both the axes and the amplitudes. This is the slow step (an STFT per signal per
-              window); set False for a fast time-domain-only run.
+              window). Set False for a fast time-domain-only run.
             - verbose (bool): toggle print statements
             """
             self.folder_path =   folder_path
@@ -105,9 +105,10 @@ class HeartbeatDataProcessor:
         # 2. Preprocess each subject
         for subject_num in subject_array:
             file_path = f"{self.folder_path}subject{subject_num}.dat"
-            df_raw = pd.read_csv(file_path, sep=r'\s+', header=None)
-            #setting index to timestamp!
-            df_raw.set_index(0)
+            # Name the columns at read so every step downstream works by column name. This
+            # keeps interpolation, filtering, and feature selection robust to columns being
+            # dropped or reordered upstream.
+            df_raw = pd.read_csv(file_path, sep=r'\s+', header=None, names=self.PAMAP2_HEADERS)
 
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
@@ -115,10 +116,6 @@ class HeartbeatDataProcessor:
             df_raw = self._interpolate_df(df_raw)
             #filter function should be a separate function under class and should be applied here after interplote on df_raw
             df_raw = self._filter_df(df_raw)
-
-            # Name the columns now that interpolation and filtering, which work on the raw
-            # integer columns, are done.
-            df_raw.columns = self.PAMAP2_HEADERS
 
             #segment by window_size and step_size
             self.subject_segment_dict[subject_num] = []
@@ -154,7 +151,7 @@ class HeartbeatDataProcessor:
     #    returns 0. The paper sets only harmonic mean and Pearson to 0 on zero division.
     # 2. Decide whether to keep heart rate, which the paper excludes (it uses IMU data only).
     # 3. Confirm the STFT parameters (segment length, overlap, window), which the paper does
-    #    not state; the current values in __init__ are our choice.
+    #    not state. The current values in __init__ are our choice.
     def extract_all_features(self):
         """
         Run extract_features on every window in subject_segment_dict and stack the rows into
@@ -208,7 +205,7 @@ class HeartbeatDataProcessor:
         the Table 3 statistics are taken over up to four streams: the original time-domain
         channels (always), the per-sensor amplitude M in the time domain (if
         include_amplitude), and the STFT magnitude of both in the frequency domain (if
-        include_frequency; those channels carry a "_stft" suffix). The within-sensor axis
+        include_frequency). Those channels carry a "_stft" suffix. The within-sensor axis
         correlations are added from the time domain. The returned index therefore depends on
         the include_amplitude / include_frequency settings.
         """
@@ -227,7 +224,7 @@ class HeartbeatDataProcessor:
             return (column ** 2).mean()
 
         def _harmonic_mean(column):
-            # Harmonic mean n/sum(1/x) on the signed samples (Table 3; Section III-C defines
+            # Harmonic mean n/sum(1/x) on the signed samples (Table 3, Section III-C defines
             # x as one axis's samples in a window). This is not scipy.stats.hmean, which
             # returns NaN on signed input. Zero division is set to 0, per Section III-C.
             column = column.dropna()
@@ -301,10 +298,10 @@ class HeartbeatDataProcessor:
             flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
             return flat
 
-        # The streams of Section III-C. The original time domain is always extracted; the
+        # The streams of Section III-C. The original time domain is always extracted. The
         # amplitude and frequency-domain streams are optional (see include_amplitude /
         # include_frequency in __init__), since the STFT is the slow step. Heart rate is kept
-        # only in the original time domain; it has no triad for an amplitude, and its sparse,
+        # only in the original time domain. It has no triad for an amplitude, and its sparse,
         # low-rate sampling makes its spectrum meaningless.
         channels = window_df[self.FEATURE_CHANNELS]
         feature_parts = [_per_channel_features(channels)]
@@ -390,14 +387,13 @@ class HeartbeatDataProcessor:
 
     def _interpolate_df(self,df_raw):
 
-        columns = list(df_raw.columns.values)
-        
         # we will want to deal with heart rate sampling as a special case, since it is sampled at a low frequency
         # skip for now, implement here or elsewhere when we decide how to proceed
 
-        columns.remove(0) #remove timestamp
-        columns.remove(1) #remove activity id
-        columns.remove(2) #remove heartrate
+        # Interpolate every column except the metadata, identified by name (not position) so
+        # that dropping or reordering columns upstream cannot break this.
+        metadata = ['timestamp', 'activity_id', 'heart_rate']
+        columns = [c for c in df_raw.columns if c not in metadata]
 
         #create mask of all entries NOT part of long nan sequences
         mask = df_raw[columns].copy()
