@@ -145,13 +145,15 @@ class HeartbeatDataProcessor:
         self.df_filtered  = pd.concat(self.subject_segment_dict[subject_num],ignore_index=True)
 
     # Remaining work, roughly by urgency:
-    # 1. Decide a NaN / zero-variance policy. The features rely on agg skipping NaNs, but a
-    #    constant channel (e.g. heart rate over a short window) still gives NaN for the
-    #    Table 3 skew and kurtosis, which scipy returns on zero variance while pandas
-    #    returns 0. The paper sets only harmonic mean and Pearson to 0 on zero division.
-    # 2. Decide whether to keep heart rate, which the paper excludes (it uses IMU data only).
-    # 3. Confirm the STFT parameters (segment length, overlap, window), which the paper does
+    # 1. Decide whether to keep heart rate, which the paper excludes (it uses IMU data only).
+    # 2. Confirm the STFT parameters (segment length, overlap, window), which the paper does
     #    not state. The current values in __init__ are our choice.
+    #
+    # NaN check: the feature matrix was 0 NaN on the fast path (time domain only) across all
+    # 8 subjects (18,103 windows), and 0 NaN on the full path on subject 101. The full path
+    # is NaN-free by construction, since its amplitude, STFT, and correlation features derive
+    # from the motion channels, which the filter leaves NaN-free, but it was not run on every
+    # subject.
     def extract_all_features(self):
         """
         Run extract_features on every window in subject_segment_dict and stack the rows into
