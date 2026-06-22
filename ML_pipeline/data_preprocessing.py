@@ -12,6 +12,7 @@ import sys
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.signal import stft
 from sklearn.preprocessing import StandardScaler
 from itertools import groupby, combinations
 from operator import itemgetter
@@ -21,41 +22,22 @@ from functools import partial
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'analysis_and_validation'))
 from read_data import get_pamap2_headers
 
-PAMAP2_HEADERS = get_pamap2_headers()
-BODY_PARTS = ['hand', 'chest', 'ankle']
-
-# Channels kept for feature extraction. Per the PAMAP2 readme, the
-# orientation columns are invalid, the +-6g accelerometer can saturate, and temperature
-# does not track motion, so all three are dropped. This leaves the (x/y/z)
-# acc16, gyro, and mag on each IMU, plus heart rate.
-TRIAXIAL_SENSORS = ['acc16', 'gyro', 'mag']
-SENSOR_TRIADS = {
-    f"{part}_{sensor}": [f"{part}_{sensor}_{axis}" for axis in ('x', 'y', 'z')]
-    for part in BODY_PARTS for sensor in TRIAXIAL_SENSORS
-}
-# Heart rate is kept as a feature channel; its low sampling rate is not yet handled.
-FEATURE_CHANNELS = ['heart_rate'] + [axis for triad in SENSOR_TRIADS.values() for axis in triad]
-
-# Readable names for the agg outputs; any function not listed keeps the name agg gives it.
-FEATURE_NAMES = {
-    '_harmonic_mean': 'hmean',
-    '_peak2peak_amp': 'p2p',
-    '_sum_of_area': 'sum_abs',
-    '_signal_mean_energy': 'mean_energy',
-    'median_abs_deviation': 'mad',
-}
-
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,max_interpLength=0.1,verbose=True):
+    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,max_interpLength=0.1,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',verbose=True):
             """
             Initializes the data pipeline reader.
-            
+
             Parameters:
             - file_path (str): Path to the df_intervals CSV data.
             - window_size (int): Number of consecutive intervals per training chunk.
             - step_size (int): How far the window slides forward (enables overlapping).
             - max_interpLength (flt): max length of NaNs in seconds to interpolate
+            - sample_rate (int): sample rate in Hz, used for the frequency-domain STFT.
+            - stft_nperseg (int): STFT segment length in samples; the paper leaves it
+              unspecified, so this is our choice (clamped to the window length per signal).
+            - stft_noverlap (int): STFT segment overlap in samples; likewise our choice.
+            - stft_window (str): STFT window function passed to scipy.signal.stft.
             - verbose (bool): toggle print statements
             """
             self.folder_path =   folder_path
@@ -64,6 +46,10 @@ class HeartbeatDataProcessor:
             self.step_size = step_size
             self.max_interpLength = max_interpLength
             self.boundary_cut = boundary_cut
+            self.sample_rate = sample_rate
+            self.stft_nperseg = stft_nperseg
+            self.stft_noverlap = stft_noverlap
+            self.stft_window = stft_window
             self.verbose = verbose
             # Initialize internal storage and stateful scaler
             self.df_filtered = None
@@ -71,6 +57,33 @@ class HeartbeatDataProcessor:
             self.scaler = StandardScaler()
             self.subject_segment_dict = {}
             self.features_df = None
+
+            # PAMAP2 column headers, reused from read_data rather than restated.
+            self.PAMAP2_HEADERS = get_pamap2_headers()
+            self.BODY_PARTS = ['hand', 'chest', 'ankle']
+
+            # Channels kept for feature extraction. Per the PAMAP2 readme, the
+            # orientation columns, the +-6g accelerometer and temperature are dropped.
+            self.TRIAXIAL_SENSORS = ['acc16', 'gyro', 'mag']
+            self.SENSOR_TRIADS = {
+                f"{part}_{sensor}": [f"{part}_{sensor}_{axis}" for axis in ('x', 'y', 'z')]
+                for part in self.BODY_PARTS for sensor in self.TRIAXIAL_SENSORS
+            }
+            # The 27 triaxial motion axes, and the same plus heart rate as feature channels.
+            self.MOTION_AXES = [
+                axis for triad in self.SENSOR_TRIADS.values() for axis in triad
+            ]
+            self.FEATURE_CHANNELS = ['heart_rate'] + self.MOTION_AXES
+            self.FEATURE_NAMES = {
+                '_harmonic_mean': 'hmean',
+                '_peak2peak_amp': 'p2p',
+                '_sum_of_area': 'sum_abs',
+                '_signal_mean_energy': 'mean_energy',
+                'median_abs_deviation': 'mad',
+                '_table3_std': 'table_3_std',
+                '_table3_skew': 'table_3_skew',
+                '_table3_kurtosis': 'table_3_kurtosis',
+            }
 
     def _load_filtered_df(self,subject_num):
         #the data here already filtered by activity id!=0 and length>20
@@ -96,7 +109,7 @@ class HeartbeatDataProcessor:
 
             # Name the columns now that interpolation and filtering, which work on the raw
             # integer columns, are done.
-            df_raw.columns = PAMAP2_HEADERS
+            df_raw.columns = self.PAMAP2_HEADERS
 
             #segment by window_size and step_size
             self.subject_segment_dict[subject_num] = []
@@ -126,11 +139,13 @@ class HeartbeatDataProcessor:
         # df_combined[['x', 'y', 'z']] = self.scaler.fit_transform(df_combined[['x', 'y', 'z']])
 
     # Remaining work, roughly by urgency:
-    # 1. Check the feature values against the paper's Table 3 (not yet verified numerically).
-    # 2. Handle NaNs. The features rely on agg skipping them, so a longer interpolation
-    #    window may be needed.
-    # 3. Add the frequency-domain streams. Section III-C also extracts Table 3 from the
-    #    amplitude M=sqrt(x^2+y^2+z^2) and from STFT spectra; only the time domain is done.
+    # 1. Decide a NaN / zero-variance policy. The features rely on agg skipping NaNs, but a
+    #    constant channel (e.g. heart rate over a short window) still gives NaN for the
+    #    Table 3 skew and kurtosis, which scipy returns on zero variance while pandas
+    #    returns 0. The paper sets only harmonic mean and Pearson to 0 on zero division.
+    # 2. Decide whether to keep heart rate, which the paper excludes (it uses IMU data only).
+    # 3. Confirm the STFT parameters (segment length, overlap, window), which the paper does
+    #    not state; the current values in __init__ are our choice.
     def extract_all_features(self):
         """
         Run extract_features on every window in subject_segment_dict and stack the rows into
@@ -146,15 +161,32 @@ class HeartbeatDataProcessor:
                 row = self.extract_features(segment)
                 # Each interval holds a single activity, so activity_id is constant within
                 # a window and the first sample's value labels the whole window.
+                activity_ids = segment['activity_id']
+                assert activity_ids.nunique() == 1, (
+                    f"window spans multiple activities {activity_ids.unique()} "
+                    f"(subject {segment['subject_id'].iloc[0]}, "
+                    f"interval {segment['interval_id'].iloc[0]})"
+                )
                 row['subject_id'] = segment['subject_id'].iloc[0]
                 row['interval_id'] = segment['interval_id'].iloc[0]
-                row['activity_id'] = segment['activity_id'].iloc[0]
+                row['activity_id'] = activity_ids.iloc[0]
                 feature_rows.append(row)
 
         self.features_df = pd.DataFrame(feature_rows).reset_index(drop=True)
         if self.verbose:
             print("extracted features for", len(self.features_df), "windows")
         return self.features_df
+
+    def save_features(self, path):
+        """
+        Write the extracted feature matrix to CSV so the slow extraction only has to run
+        once. extract_all_features must have been called first.
+        """
+        if self.features_df is None:
+            raise RuntimeError("no features to save; run extract_all_features first")
+        self.features_df.to_csv(path, index=False)
+        if self.verbose:
+            print("saved features to", path)
 
     def extract_features(self, window_df):
         """
@@ -163,16 +195,13 @@ class HeartbeatDataProcessor:
         Parameters:
         - window_df (pd.DataFrame): samples for one window, with named PAMAP2 columns.
 
-        Returns a pandas Series indexed by "<channel>_<feature>", covering the
-        per-axis statistics from the paper's Table 3 plus the within-sensor axis
-        correlations.
+        Returns a pandas Series indexed by "<channel>_<feature>". Following Section III-C,
+        the Table 3 statistics are taken over four streams: the original time-domain
+        channels, the per-sensor amplitude M in the time domain, and the STFT magnitude of
+        both in the frequency domain (those channels carry a "_stft" suffix). The
+        within-sensor axis correlations are added from the time domain.
         """
-        # Restrict to the modelled channels. The metadata columns (timestamp and the ids)
-        # and the dropped sensors (orientation, the +-6g accelerometer, and temperature)
-        # are ignored here.
-        channels = window_df[FEATURE_CHANNELS]
-
-        # The custom callables below cover features with no direct pandas/scipy name.
+        # The custom functions below cover features with no direct pandas/scipy name.
         # They take a single column (a Series) because that is what agg hands them.
         def _peak2peak_amp(column):
             # Peak-to-peak amplitude is the largest sample minus the smallest (Table 3).
@@ -201,10 +230,40 @@ class HeartbeatDataProcessor:
             harmonic_mean = n / denominator
             return harmonic_mean if np.isfinite(harmonic_mean) else 0.0
 
+        # Table 3 defines std, skew, and kurtosis differently from the pandas methods used
+        # above, so the paper's forms are added as separate features rather than replacing
+        # them. The differences are the divisor and the bias/Fisher conventions.
+        def _table3_std(column):
+            # Population standard deviation sqrt((1/n) sum (x - mean)^2), dividing by n. The
+            # pandas 'std' above divides by n - 1.
+            return column.std(ddof=0)
+
+        def _table3_skew(column):
+            # Biased (population) skewness. The pandas 'skew' above applies a sample bias
+            # correction. A constant (zero-variance) window leaves skewness undefined, so it
+            # is set to 0, matching how the paper handles the harmonic mean and Pearson zero
+            # division, and matching what pandas 'skew' returns on constant input.
+            column = column.dropna()
+            if len(column) == 0:
+                return np.nan
+            if column.std(ddof=0) == 0:
+                return 0.0
+            return stats.skew(column, bias=True)
+
+        def _table3_kurtosis(column):
+            # Raw fourth standardized moment, for which a normal distribution gives 3. The
+            # pandas 'kurtosis' above returns the Fisher (excess) value, normal 0, with a
+            # bias correction. A constant window is set to 0 as for the skew above.
+            column = column.dropna()
+            if len(column) == 0:
+                return np.nan
+            if column.std(ddof=0) == 0:
+                return 0.0
+            return stats.kurtosis(column, fisher=False, bias=True)
+
         # agg accepts three kinds of function: strings name pandas methods, the stats.*
-        # entries are scipy functions, and the underscore callables above are custom. Each
-        # function is applied to every channel at once, giving a (feature x channel) table.
-        stats_df = channels.agg(func=[
+        # entries are scipy functions, and the underscore callables above are custom.
+        agg_funcs = [
             'mean',
             _harmonic_mean,
             'std',
@@ -218,18 +277,72 @@ class HeartbeatDataProcessor:
             _signal_mean_energy,
             'skew',
             'kurtosis',
+            _table3_std,
+            _table3_skew,
+            _table3_kurtosis,
+        ]
+
+        def _per_channel_features(signals):
+            # Apply every function to every column, then flatten the (feature x channel)
+            # table into one row indexed "<channel>_<feature>", e.g. hand_acc16_x_mean.
+            table = signals.agg(func=agg_funcs).rename(index=self.FEATURE_NAMES)
+            flat = table.stack()
+            flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
+            return flat
+
+        # The four streams of Section III-C: original time domain, amplitude time domain,
+        # and the STFT magnitude of each in the frequency domain. Heart rate is kept only in
+        # the original time domain; it has no triad for an amplitude, and its sparse, low-rate
+        # sampling makes its spectrum meaningless.
+        channels = window_df[self.FEATURE_CHANNELS]
+        amplitude = self._amplitude_signals(window_df)
+        axis_spectra = self._stft_magnitude_signals(window_df[self.MOTION_AXES])
+        amplitude_spectra = self._stft_magnitude_signals(amplitude)
+
+        return pd.concat([
+            _per_channel_features(channels),
+            _per_channel_features(amplitude),
+            _per_channel_features(axis_spectra),
+            _per_channel_features(amplitude_spectra),
+            # Axis correlations are taken in the time domain only.
+            self._axis_correlations(channels),
         ])
 
-        # Give the rows readable names, then flatten the (feature x channel) table into a
-        # single row indexed "<channel>_<feature>", for example hand_acc16_x_mean.
-        stats_df = stats_df.rename(index=FEATURE_NAMES)
-        flat = stats_df.stack()
-        flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
+    def _amplitude_signals(self, window_df):
+        """
+        Amplitude M = sqrt(x^2 + y^2 + z^2) per triaxial sensor (Section III-C, eq. 3).
 
-        # Add the within-sensor axis correlations (Pearson).
-        correlations = self._axis_correlations(channels)
+        Collapsing the three axes into one magnitude removes orientation dependence.
+        Returns a DataFrame whose columns are "<sensor>_amp" (e.g. hand_acc16_amp), one
+        per sensor.
+        """
+        amplitudes = {}
+        for sensor, axes in self.SENSOR_TRIADS.items():
+            amplitudes[f"{sensor}_amp"] = np.sqrt((window_df[axes] ** 2).sum(axis=1))
+        return pd.DataFrame(amplitudes)
 
-        return pd.concat([flat, correlations])
+    def _stft_magnitude_signals(self, signals):
+        """
+        Short-time Fourier transform magnitude of each signal, flattened to a vector.
+
+        Section III-C extracts the Table 3 features from the frequency domain as well,
+        obtained by an STFT of the original and amplitude signals, but does not state the
+        STFT parameters. The window, segment length, and overlap are therefore our choice
+        (set in __init__), and the features are computed over the flattened magnitude
+        spectrum. NaNs are linearly interpolated first, since the STFT does not skip them.
+
+        Returns a DataFrame whose columns are the input columns suffixed with "_stft".
+        """
+        spectra = {}
+        for column in signals.columns:
+            signal = signals[column].interpolate().bfill().ffill().to_numpy()
+            # nperseg cannot exceed the signal length, and noverlap must be below nperseg.
+            nperseg = min(self.stft_nperseg, len(signal))
+            noverlap = min(self.stft_noverlap, nperseg - 1) if nperseg > 1 else 0
+            _, _, Zxx = stft(signal, fs=self.sample_rate, window=self.stft_window,
+                             nperseg=nperseg, noverlap=noverlap)
+            spectra[f"{column}_stft"] = np.abs(Zxx).ravel()
+        return pd.DataFrame(spectra)
 
     def _axis_correlations(self, channels):
         """
@@ -244,7 +357,7 @@ class HeartbeatDataProcessor:
         hand_acc16_corr_xy).
         """
         correlations = {}
-        for sensor, axes in SENSOR_TRIADS.items():
+        for sensor, axes in self.SENSOR_TRIADS.items():
             for axis_a, axis_b in combinations(axes, 2):
                 correlation = channels[axis_a].corr(channels[axis_b])
                 # A constant (zero-variance) axis makes the correlation undefined (NaN),
