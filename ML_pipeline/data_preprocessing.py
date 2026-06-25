@@ -15,7 +15,6 @@ from scipy import stats
 from scipy.signal import stft
 from itertools import groupby, combinations
 from operator import itemgetter
-from functools import partial
 
 # Reuse the PAMAP2 column headers from read_data rather than restating them.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'analysis_and_validation'))
@@ -240,6 +239,16 @@ class HeartbeatDataProcessor:
             harmonic_mean = n / denominator
             return harmonic_mean if np.isfinite(harmonic_mean) else 0.0
 
+        # Named wrappers around the scipy statistics. They exist so the aggregation table
+        # below can hold plain callables instead of functools.partial: a partial has no
+        # __name__, and pandas inspects __name__ when classifying an aggregation, so the
+        # partial form is fragile across pandas versions (see _per_channel_features).
+        def _median_abs_deviation(column):
+            return stats.median_abs_deviation(column, nan_policy='omit')
+
+        def _interquartile_range(column):
+            return stats.iqr(column, nan_policy='omit')
+
         # Table 3 defines std, skew, and kurtosis differently from the pandas methods used
         # above, so the paper's forms are added as separate features rather than replacing
         # them. The differences are the divisor and the bias/Fisher conventions.
@@ -271,31 +280,42 @@ class HeartbeatDataProcessor:
                 return 0.0
             return stats.kurtosis(column, fisher=False, bias=True)
 
-        # agg accepts three kinds of function: strings name pandas methods, the stats.*
-        # entries are scipy functions, and the underscore callables above are custom.
+        # Each (label, func) pair is one Table 3 statistic. func is either the name of a
+        # pandas method (a string) or one of the callables above. The label is the row name
+        # before FEATURE_NAMES renames it.
         agg_funcs = [
-            'mean',
-            _harmonic_mean,
-            'std',
-            'max',
-            'min',
-            _peak2peak_amp,
-            'median',
-            partial(stats.median_abs_deviation, nan_policy='omit'),
-            partial(stats.iqr, nan_policy='omit'),
-            _sum_of_area,
-            _signal_mean_energy,
-            'skew',
-            'kurtosis',
-            _table3_std,
-            _table3_skew,
-            _table3_kurtosis,
+            ('mean', 'mean'),
+            ('_harmonic_mean', _harmonic_mean),
+            ('std', 'std'),
+            ('max', 'max'),
+            ('min', 'min'),
+            ('_peak2peak_amp', _peak2peak_amp),
+            ('median', 'median'),
+            ('median_abs_deviation', _median_abs_deviation),
+            ('iqr', _interquartile_range),
+            ('_sum_of_area', _sum_of_area),
+            ('_signal_mean_energy', _signal_mean_energy),
+            ('skew', 'skew'),
+            ('kurtosis', 'kurtosis'),
+            ('_table3_std', _table3_std),
+            ('_table3_skew', _table3_skew),
+            ('_table3_kurtosis', _table3_kurtosis),
         ]
 
         def _per_channel_features(signals):
-            # Apply every function to every column, then flatten the (feature x channel)
+            # Apply every statistic to every column, then flatten the (feature x channel)
             # table into one row indexed "<channel>_<feature>", e.g. hand_acc16_x_mean.
-            table = signals.agg(func=agg_funcs).rename(index=self.FEATURE_NAMES)
+            #
+            # Built explicitly instead of DataFrame.agg(list-of-funcs): pandas 2.x and 3.x
+            # classify some callables differently in the list form (e.g. a function named
+            # "iqr" is treated as a transform on 2.x), which raises "cannot combine transform
+            # and aggregation operations" on 2.x. Calling each statistic directly avoids that.
+            rows = {
+                label: (getattr(signals, func)() if isinstance(func, str)
+                        else signals.apply(func))
+                for label, func in agg_funcs
+            }
+            table = pd.DataFrame(rows).T.rename(index=self.FEATURE_NAMES)
             flat = table.stack()
             flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
             return flat
