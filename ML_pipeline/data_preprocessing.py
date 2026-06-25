@@ -1,12 +1,33 @@
-from tracemalloc import start
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-from itertools import groupby
-from operator import itemgetter
+from pathlib import Path
+import sys
+
+try:
+    from data_filtering import HeartRateFilter
+except ModuleNotFoundError:
+    # Allow importing when running from inside ML_pipeline/
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.append(str(project_root))
+    from data_filtering import HeartRateFilter
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,verbose=True):
+    def __init__(
+        self,
+        folder_path,
+        filtered_df_path,
+        window_size=2,
+        step_size=1,
+        boundary_cut=5,
+        interp_limit=10,
+        filter_kernel_size=5,
+        filter_cutoff=13.0,
+        sampling_rate=100.0,
+        filter_order=4,
+        verbose=True
+    ):
             """
             Initializes the data pipeline reader.
             
@@ -29,6 +50,12 @@ class HeartbeatDataProcessor:
             self.filtered_index = None
             self.scaler = StandardScaler()
             self.subject_segment_dict = {}
+            self.hr_filter = HeartRateFilter(
+                kernel_size=filter_kernel_size,
+                cutoff=filter_cutoff,
+                fs=sampling_rate,
+                order=filter_order
+            )
 
     def _load_filtered_df(self,subject_num):
         #the data here already filtered by activity id!=0 and length>20
@@ -122,5 +149,24 @@ class HeartbeatDataProcessor:
         return df_raw
 
     def _filter_df(self,df_raw):
-            #filter function should be a separate function under class and should be applied here after interplote on df_raw
+            columns_to_filter = [col for col in df_raw.columns if col not in [0, 1, 2]]
+
+            if self.verbose:
+                print(f"Filtering {len(columns_to_filter)} columns (excluding 0, 1, 2)...")
+
+            for col in columns_to_filter:
+                # Skip columns with too little data for filtfilt padding requirements.
+                valid_count = df_raw[col].notna().sum()
+                if valid_count < 13:
+                    if self.verbose:
+                        print(f"Skipping column {col}: insufficient non-NaN samples ({valid_count}).")
+                    continue
+
+                try:
+                    df_raw[col] = self.hr_filter.fit_transform(df_raw[col]).flatten()
+                except ValueError:
+                    if self.verbose:
+                        print(f"Skipping column {col}: filtering failed due to signal length/shape.")
+                    continue
+
             return df_raw
