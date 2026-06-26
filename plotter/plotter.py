@@ -1,7 +1,13 @@
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+# Reuse the interpolator the feature extraction and ML pipeline run, rather than a second
+# copy, so plotted interpolations match the data the models are trained on.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ML_pipeline"))
+from data_preprocessing import HeartbeatDataProcessor
 
 plt.style.use("seaborn-v0_8-whitegrid")
 
@@ -49,8 +55,20 @@ for location in ["hand", "chest", "ankle"]:
     COLUMNS += imu_cols(location)
 
 
-def load_subject(subject):
+def load_subject(subject, interpolate=False, interp_limit=10):
+    # interpolate runs the recording through the ML pipeline's interpolator
+    # (HeartbeatDataProcessor._interpolate_df), which linearly fills runs of up to
+    # interp_limit consecutive NaNs and leaves longer gaps untouched. The columns are named
+    # at read so the interpolator, which works by column name, can skip the metadata.
     path = f"{DATA_DIR}/subject{subject}.dat"
+
+    if interpolate:
+        df = pd.read_csv(path, sep=" ", header=None, names=COLUMNS, na_values="NaN")
+        processor = HeartbeatDataProcessor(folder_path="", filtered_df_path="",
+                                           interp_limit=interp_limit, verbose=False)
+        df = processor._interpolate_df(df)
+        return df
+
     df = pd.read_csv(path, sep=" ", header=None, names=COLUMNS, na_values="NaN")
     return df
 
@@ -93,13 +111,21 @@ def get_segment(df, activity, start, seconds, activity_interval=0):
 
 
 def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
-                  start=10, seconds=10, magnitude=False, activity_interval=0,df=None):
-    
+                  start=10, seconds=10, magnitude=False, activity_interval=0,
+                  markers=False, interpolate=False, df=None):
+
     # input desired dataframe as df, or leave as None and input subject ID for automatic read.
     # when manually inputting df, set subject parameter with desired title.
-    
+
+    # markers overlays a dot on each plotted sample. This exposes the interpolator: a
+    # filled gap appears as evenly spaced dots lying on the straight segment between the
+    # two real samples that bracket it, whereas genuine samples follow the signal.
+
+    # interpolate runs the read through the ML pipeline's interpolator; it only applies to
+    # the automatic read, since a supplied df is plotted as given.
+
     if type(df)!=pd.DataFrame:
-        df = load_subject(subject)
+        df = load_subject(subject, interpolate=interpolate)
         print('No input dataframe! Reading data for subject '+subject+'.')
     else:
         print('Using input dataframe!')
@@ -113,15 +139,18 @@ def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
 
     plt.figure(figsize=(10, 5))
 
+    # A small dot per sample keeps the line readable on densely sampled windows.
+    marker = "." if markers else None
+
     if magnitude:
         # Combine x/y/z into one size-of-motion signal.
         size = np.sqrt(segment[f"{sensor}_x"] ** 2
                        + segment[f"{sensor}_y"] ** 2
                        + segment[f"{sensor}_z"] ** 2)
-        plt.plot(time, size, label="magnitude")
+        plt.plot(time, size, marker=marker, label="magnitude")
     else:
         for axis in "xyz":
-            plt.plot(time, segment[f"{sensor}_{axis}"], label=axis)
+            plt.plot(time, segment[f"{sensor}_{axis}"], marker=marker, label=axis)
 
     plt.xlabel("time (seconds)")
     plt.ylabel(sensor)
@@ -134,13 +163,17 @@ def plot_activity(subject="101", activity="walking", sensor="hand_acc16",
 
 def plot_activity_multi(subject="101", activity="walking",
                         sensors=("hand_acc16", "chest_acc16"),
-                        start=10, seconds=10, magnitude=False,df=None):
-    
+                        start=10, seconds=10, magnitude=False,
+                        markers=False, interpolate=False, df=None):
+
     # input desired dataframe as df, or leave as None and input subject ID for automatic read.
     # when manually inputting df, set subject parameter with desired title
-    
+
+    # markers and interpolate behave as in plot_activity; interpolate only applies to the
+    # automatic read, since a supplied df is plotted as given.
+
     if type(df)!=pd.DataFrame:
-        df = load_subject(subject)
+        df = load_subject(subject, interpolate=interpolate)
         print('No input dataframe! Reading data for subject '+subject+'.')
     else:
         print('Using input dataframe!')
@@ -152,6 +185,9 @@ def plot_activity_multi(subject="101", activity="walking",
 
     time = np.arange(len(segment)) / SAMPLE_RATE + start
 
+    # A small dot per sample keeps the line readable on densely sampled windows.
+    marker = "." if markers else None
+
     # One panel per sensor so the signals can be compared side by side.
     fig, axes = plt.subplots(1, len(sensors), figsize=(6 * len(sensors), 5),
                              sharex=True)
@@ -161,10 +197,10 @@ def plot_activity_multi(subject="101", activity="walking",
             size = np.sqrt(segment[f"{sensor}_x"] ** 2
                            + segment[f"{sensor}_y"] ** 2
                            + segment[f"{sensor}_z"] ** 2)
-            ax.plot(time, size, label="magnitude")
+            ax.plot(time, size, marker=marker, label="magnitude")
         else:
             for axis in "xyz":
-                ax.plot(time, segment[f"{sensor}_{axis}"], label=axis)
+                ax.plot(time, segment[f"{sensor}_{axis}"], marker=marker, label=axis)
 
         ax.set_xlabel("time (seconds)")
         ax.set_ylabel(sensor)
@@ -177,16 +213,21 @@ def plot_activity_multi(subject="101", activity="walking",
 
 def plot_subjects_multi(subjects=("101", "102"), activity="walking",
                         sensor="hand_acc16", starts=10, seconds=10,
-                        magnitude=False):
+                        magnitude=False, markers=False, interpolate=False):
     # starts may be one value shared by everyone or one value per subject.
+    # markers and interpolate behave as in plot_activity.
 
     if np.isscalar(starts):
         starts = [starts] * len(subjects)
 
+    # A small dot per sample keeps the line readable on densely sampled windows.
+    marker = "." if markers else None
+
     fig, axes = plt.subplots(1, len(subjects), figsize=(6 * len(subjects), 5))
 
     for ax, subject, start in zip(np.atleast_1d(axes), subjects, starts):
-        segment = get_segment(load_subject(subject), activity, start, seconds)
+        segment = get_segment(load_subject(subject, interpolate=interpolate),
+                              activity, start, seconds)
         if segment is None:
             continue
 
@@ -196,10 +237,10 @@ def plot_subjects_multi(subjects=("101", "102"), activity="walking",
             size = np.sqrt(segment[f"{sensor}_x"] ** 2
                            + segment[f"{sensor}_y"] ** 2
                            + segment[f"{sensor}_z"] ** 2)
-            ax.plot(time, size, label="magnitude")
+            ax.plot(time, size, marker=marker, label="magnitude")
         else:
             for axis in "xyz":
-                ax.plot(time, segment[f"{sensor}_{axis}"], label=axis)
+                ax.plot(time, segment[f"{sensor}_{axis}"], marker=marker, label=axis)
 
         ax.set_xlabel("time (seconds)")
         ax.set_ylabel(sensor)
