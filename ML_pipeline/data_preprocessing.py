@@ -11,7 +11,8 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from scipy import stats
+# Imported as scipy_stats so the extract_features "stats" argument cannot shadow it.
+from scipy import stats as scipy_stats
 from scipy.signal import stft
 from itertools import groupby, combinations
 from operator import itemgetter
@@ -83,6 +84,8 @@ class HeartbeatDataProcessor:
                 axis for triad in self.SENSOR_TRIADS.values() for axis in triad
             ]
             self.FEATURE_CHANNELS = ['heart_rate'] + self.MOTION_AXES
+            # The Section III-C feature streams that extract_features can select.
+            self.STREAMS = ('time', 'amplitude', 'frequency')
             self.FEATURE_NAMES = {
                 '_harmonic_mean': 'hmean',
                 '_peak2peak_amp': 'p2p',
@@ -153,11 +156,15 @@ class HeartbeatDataProcessor:
     # is NaN-free by construction, since its amplitude, STFT, and correlation features derive
     # from the motion channels, which the filter leaves NaN-free, but it was not run on every
     # subject.
-    def extract_all_features(self):
+    def extract_all_features(self, streams=None, channels=None, stats=None):
         """
         Run extract_features on every window in subject_segment_dict and stack the rows into
         a feature matrix. Each row is one window, tagged with subject_id, interval_id, and
         activity_id. The matrix is returned and stored on self.features_df.
+
+        streams, channels, and stats select which features to compute and are passed straight
+        through to extract_features. See that method. They default to the full feature set
+        (the constructor's include_amplitude / include_frequency set the default streams).
         """
         feature_rows = []
         for segments in self.subject_segment_dict.values():
@@ -165,7 +172,8 @@ class HeartbeatDataProcessor:
                 # Some chunks appended by preprocess_subjects are empty, so skip them.
                 if segment.empty:
                     continue
-                row = self.extract_features(segment)
+                row = self.extract_features(segment, streams=streams,
+                                            channels=channels, stats=stats)
                 # Each interval holds a single activity, so activity_id is constant within
                 # a window and the first sample's value labels the whole window.
                 activity_ids = segment['activity_id']
@@ -195,21 +203,56 @@ class HeartbeatDataProcessor:
         if self.verbose:
             print("saved features to", path)
 
-    def extract_features(self, window_df):
+    @staticmethod
+    def _resolve_selection(requested, valid, kind):
+        """
+        Normalize a feature-selection argument. None means "all of valid". Otherwise the
+        request must be a non-empty subset of valid. An unknown or empty request raises
+        ValueError. The result keeps the canonical order of valid.
+        """
+        if requested is None:
+            return list(valid)
+        requested = list(requested)
+        if not requested:
+            raise ValueError(f"no {kind} selected; pass None for all or a non-empty subset")
+        unknown = [r for r in requested if r not in valid]
+        if unknown:
+            raise ValueError(f"unknown {kind} {unknown}; valid options are {list(valid)}")
+        chosen = set(requested)
+        return [v for v in valid if v in chosen]
+
+    def extract_features(self, window_df, streams=None, channels=None, stats=None):
         """
         Extract one row of features from a single window of samples.
 
         Parameters:
         - window_df (pd.DataFrame): samples for one window, with named PAMAP2 columns.
+        - streams (list of str or None): which Section III-C streams to compute, any of
+          'time', 'amplitude', 'frequency'. None uses the constructor's include_amplitude /
+          include_frequency for the default ('time' is on by default).
+        - channels (list of str or None): which feature channels to include, a subset of
+          FEATURE_CHANNELS (heart rate and the 27 motion axes). None means all. Amplitude and
+          axis-correlation features need a full triad, so they are produced only for sensors
+          whose three axes are all selected.
+        - stats (list of str or None): which Table 3 statistics to compute, named by their
+          output suffix (e.g. 'mean', 'hmean', 'p2p', 'table_3_std'). None means all.
 
-        Returns a pandas Series indexed by "<channel>_<feature>". Following Section III-C,
-        the Table 3 statistics are taken over up to four streams: the original time-domain
-        channels (always), the per-sensor amplitude M in the time domain (if
-        include_amplitude), and the STFT magnitude of both in the frequency domain (if
-        include_frequency). Those channels carry a "_stft" suffix. The within-sensor axis
-        correlations are added from the time domain. The returned index therefore depends on
-        the include_amplitude / include_frequency settings.
+        An unknown or empty streams / channels / stats raises ValueError.
+
+        Returns a pandas Series indexed by "<channel>_<feature>". Frequency-domain channels
+        carry a "_stft" suffix. The returned index depends on the selection.
         """
+        # Resolve the stream and channel selections (stats are resolved below, once the
+        # statistic table is built). None means "all"; an unknown entry raises.
+        if streams is None:
+            streams = ['time']
+            if self.include_amplitude:
+                streams.append('amplitude')
+            if self.include_frequency:
+                streams.append('frequency')
+        streams = self._resolve_selection(streams, self.STREAMS, 'stream')
+        channels = self._resolve_selection(channels, self.FEATURE_CHANNELS, 'channel')
+
         # The custom functions below cover features with no direct pandas/scipy name.
         # They take a single column (a Series) because that is what agg hands them.
         def _peak2peak_amp(column):
@@ -244,10 +287,10 @@ class HeartbeatDataProcessor:
         # __name__, and pandas inspects __name__ when classifying an aggregation, so the
         # partial form is fragile across pandas versions (see _per_channel_features).
         def _median_abs_deviation(column):
-            return stats.median_abs_deviation(column, nan_policy='omit')
+            return scipy_stats.median_abs_deviation(column, nan_policy='omit')
 
         def _interquartile_range(column):
-            return stats.iqr(column, nan_policy='omit')
+            return scipy_stats.iqr(column, nan_policy='omit')
 
         # Table 3 defines std, skew, and kurtosis differently from the pandas methods used
         # above, so the paper's forms are added as separate features rather than replacing
@@ -267,7 +310,7 @@ class HeartbeatDataProcessor:
                 return np.nan
             if column.std(ddof=0) == 0:
                 return 0.0
-            return stats.skew(column, bias=True)
+            return scipy_stats.skew(column, bias=True)
 
         def _table3_kurtosis(column):
             # Raw fourth standardized moment, for which a normal distribution gives 3. The
@@ -278,7 +321,7 @@ class HeartbeatDataProcessor:
                 return np.nan
             if column.std(ddof=0) == 0:
                 return 0.0
-            return stats.kurtosis(column, fisher=False, bias=True)
+            return scipy_stats.kurtosis(column, fisher=False, bias=True)
 
         # Each (label, func) pair is one Table 3 statistic. func is either the name of a
         # pandas method (a string) or one of the callables above. The label is the row name
@@ -302,9 +345,17 @@ class HeartbeatDataProcessor:
             ('_table3_kurtosis', _table3_kurtosis),
         ]
 
+        # Resolve which statistics to compute. They are named by their output suffix (e.g.
+        # "hmean", "p2p"). An unknown name raises in _resolve_selection.
+        available_stats = [self.FEATURE_NAMES.get(label, label) for label, _ in agg_funcs]
+        stat_names = set(self._resolve_selection(stats, available_stats, 'statistic'))
+        selected_agg = [(label, func) for label, func in agg_funcs
+                        if self.FEATURE_NAMES.get(label, label) in stat_names]
+
         def _per_channel_features(signals):
-            # Apply every statistic to every column, then flatten the (feature x channel)
-            # table into one row indexed "<channel>_<feature>", e.g. hand_acc16_x_mean.
+            # Apply every selected statistic to every column, then flatten the
+            # (feature x channel) table into one row indexed "<channel>_<feature>", e.g.
+            # hand_acc16_x_mean.
             #
             # Built explicitly instead of DataFrame.agg(list-of-funcs): pandas 2.x and 3.x
             # classify some callables differently in the list form (e.g. a function named
@@ -313,49 +364,63 @@ class HeartbeatDataProcessor:
             rows = {
                 label: (getattr(signals, func)() if isinstance(func, str)
                         else signals.apply(func))
-                for label, func in agg_funcs
+                for label, func in selected_agg
             }
             table = pd.DataFrame(rows).T.rename(index=self.FEATURE_NAMES)
             flat = table.stack()
             flat.index = [f"{channel}_{feature}" for feature, channel in flat.index]
             return flat
 
-        # The streams of Section III-C. The original time domain is always extracted. The
-        # amplitude and frequency-domain streams are optional (see include_amplitude /
-        # include_frequency in __init__), since the STFT is the slow step. Heart rate is kept
-        # only in the original time domain. It has no triad for an amplitude, and its sparse,
-        # low-rate sampling makes its spectrum meaningless.
-        channels = window_df[self.FEATURE_CHANNELS]
-        feature_parts = [_per_channel_features(channels)]
+        # The channel groups the selected streams act on. motion_axes are the selected
+        # triaxial axes (heart rate has no useful spectrum, so it is excluded). sensors are
+        # the triads whose three axes are all selected, since an amplitude or an axis
+        # correlation needs the full triad.
+        selected = set(channels)
+        motion_axes = [c for c in self.MOTION_AXES if c in selected]
+        sensors = [s for s, axes in self.SENSOR_TRIADS.items()
+                   if all(a in selected for a in axes)]
 
-        # Amplitude M per sensor feeds both the amplitude time-domain features and the
-        # amplitude frequency-domain features, so compute it once if either stream is on.
+        # Assemble the requested streams. The time stream is the original channels plus the
+        # within-sensor axis correlations. The amplitude stream is the per-sensor magnitude M.
+        # The frequency stream is the STFT magnitude of the axes and of the amplitudes. The
+        # amplitude signal feeds both the amplitude and frequency streams, so compute it once.
+        feature_parts = []
+        if 'time' in streams:
+            feature_parts.append(_per_channel_features(window_df[channels]))
+
         amplitude = None
-        if self.include_amplitude or self.include_frequency:
-            amplitude = self._amplitude_signals(window_df)
-        if self.include_amplitude:
+        if 'amplitude' in streams or 'frequency' in streams:
+            amplitude = self._amplitude_signals(window_df, sensors)
+        if 'amplitude' in streams and sensors:
             feature_parts.append(_per_channel_features(amplitude))
 
-        if self.include_frequency:
-            axis_spectra = self._stft_magnitude_signals(window_df[self.MOTION_AXES])
-            amplitude_spectra = self._stft_magnitude_signals(amplitude)
-            feature_parts.append(_per_channel_features(axis_spectra))
-            feature_parts.append(_per_channel_features(amplitude_spectra))
+        if 'frequency' in streams:
+            if motion_axes:
+                axis_spectra = self._stft_magnitude_signals(window_df[motion_axes])
+                feature_parts.append(_per_channel_features(axis_spectra))
+            if sensors:
+                amplitude_spectra = self._stft_magnitude_signals(amplitude)
+                feature_parts.append(_per_channel_features(amplitude_spectra))
 
         # Axis correlations are taken in the time domain only.
-        feature_parts.append(self._axis_correlations(channels))
+        if 'time' in streams and sensors:
+            feature_parts.append(self._axis_correlations(window_df[channels], sensors))
+
+        if not feature_parts:
+            raise ValueError("the requested streams and channels produced no features")
         return pd.concat(feature_parts)
 
-    def _amplitude_signals(self, window_df):
+    def _amplitude_signals(self, window_df, sensors=None):
         """
         Amplitude M = sqrt(x^2 + y^2 + z^2) per triaxial sensor (Section III-C, eq. 3).
 
         Collapsing the three axes into one magnitude removes orientation dependence.
-        Returns a DataFrame whose columns are "<sensor>_amp" (e.g. hand_acc16_amp), one
-        per sensor.
+        sensors restricts which triads are used (None means all). Returns a DataFrame whose
+        columns are "<sensor>_amp" (e.g. hand_acc16_amp), one per sensor.
         """
+        triads = self.SENSOR_TRIADS if sensors is None else {s: self.SENSOR_TRIADS[s] for s in sensors}
         amplitudes = {}
-        for sensor, axes in self.SENSOR_TRIADS.items():
+        for sensor, axes in triads.items():
             amplitudes[f"{sensor}_amp"] = np.sqrt((window_df[axes] ** 2).sum(axis=1))
         return pd.DataFrame(amplitudes)
 
@@ -382,20 +447,22 @@ class HeartbeatDataProcessor:
             spectra[f"{column}_stft"] = np.abs(Zxx).ravel()
         return pd.DataFrame(spectra)
 
-    def _axis_correlations(self, channels):
+    def _axis_correlations(self, channels, sensors=None):
         """
         Pearson correlation between axis pairs within each triaxial sensor.
 
         For every sensor (e.g. hand_acc16) the three axis pairs (x,y), (x,z), (y,z)
         are correlated. Correlations are not taken across different sensors or
         different IMUs. A constant (zero-variance) axis gives an undefined
-        correlation, which the paper sets to 0.
+        correlation, which the paper sets to 0. sensors restricts which triads are
+        used (None means all).
 
         Returns a pandas Series indexed by "<sensor>_corr_<pair>" (e.g.
         hand_acc16_corr_xy).
         """
+        triads = self.SENSOR_TRIADS if sensors is None else {s: self.SENSOR_TRIADS[s] for s in sensors}
         correlations = {}
-        for sensor, axes in self.SENSOR_TRIADS.items():
+        for sensor, axes in triads.items():
             for axis_a, axis_b in combinations(axes, 2):
                 correlation = channels[axis_a].corr(channels[axis_b])
                 # A constant (zero-variance) axis makes the correlation undefined (NaN),
