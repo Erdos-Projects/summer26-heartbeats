@@ -115,6 +115,9 @@ class HeartbeatDataProcessor:
             # dropped or reordered upstream.
             df_raw = pd.read_csv(file_path, sep=r'\s+', header=None, names=self.PAMAP2_HEADERS)
 
+            cols_to_drop = list(range(16, 20)) + list(range(33, 37)) + list(range(50, 54))
+            df_raw = df_raw.drop(cols_to_drop, axis=1)
+
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
             #interplote code should be a separate function under class and should be applied here on df_raw
