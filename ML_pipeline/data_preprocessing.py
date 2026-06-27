@@ -15,7 +15,7 @@ import pandas as pd
 from scipy import stats as scipy_stats
 from scipy.signal import stft
 from itertools import groupby, combinations
-from operator import itemgetter
+from operator import index, itemgetter
 
 # Reuse the PAMAP2 column headers from read_data rather than restating them.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'analysis_and_validation'))
@@ -26,7 +26,7 @@ from data_filtering import HeartRateFilter
 
 
 class HeartbeatDataProcessor:
-    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',include_amplitude=True,include_frequency=True,verbose=True):
+    def __init__(self, folder_path, filtered_df_path,window_size=2, step_size=1,boundary_cut=5,interp_limit=10,sample_rate=100,stft_nperseg=64,stft_noverlap=32,stft_window='hann',include_amplitude=True,include_frequency=True,verbose=True, reduced_frequency=False):
             """
             Initializes the data pipeline reader.
 
@@ -60,6 +60,7 @@ class HeartbeatDataProcessor:
             self.include_amplitude = include_amplitude
             self.include_frequency = include_frequency
             self.verbose = verbose
+            self.reduced_frequency = reduced_frequency
             # Initialize internal storage. Feature scaling is intentionally not done here:
             # it must be fit on the training fold only (inside the model pipeline) to avoid
             # leakage, so the extractor returns raw, unscaled features.
@@ -85,7 +86,8 @@ class HeartbeatDataProcessor:
             ]
             self.FEATURE_CHANNELS = ['heart_rate'] + self.MOTION_AXES
             # The Section III-C feature streams that extract_features can select.
-            self.STREAMS = ('time', 'amplitude', 'frequency')
+            # "fft" is accepted as an alias of "frequency".
+            self.STREAMS = ('time', 'amplitude', 'frequency', 'fft')
             self.FEATURE_NAMES = {
                 '_harmonic_mean': 'hmean',
                 '_peak2peak_amp': 'p2p',
@@ -113,8 +115,33 @@ class HeartbeatDataProcessor:
             # Name the columns at read so every step downstream works by column name. This
             # keeps interpolation, filtering, and feature selection robust to columns being
             # dropped or reordered upstream.
+            # Read with canonical PAMAP2 names so downstream feature/filter code can
+            # reference stable column labels like hand_acc16_x.
             df_raw = pd.read_csv(file_path, sep=r'\s+', header=None, names=self.PAMAP2_HEADERS)
+            # Drop channels by positional index (from the raw PAMAP2 layout), then
+            # drop any optional metadata columns by name if they exist.
 
+            drop_col_indices=[]
+
+            if self.reduced_frequency:
+                col_target = df_raw.iloc[:, 2]
+                df_raw = df_raw[col_target.notna() & (col_target > 0.1)]
+                drop_col_indices = [7, 8, 9, 16, 17, 18, 19]+list(range(20, len(df_raw.columns)))
+                drop_cols_by_name = [
+                    df_raw.columns[i] for i in drop_col_indices if i < len(df_raw.columns)
+                    ]
+                df_raw = df_raw.drop(columns=drop_cols_by_name)
+                self.sample_rate = 9
+                self.window_size = 4
+                self.step_size = 2
+
+
+            else:
+                drop_col_indices = [2, 7, 8, 9, 16, 17, 18, 19, 24, 25, 26, 33, 34, 35, 36, 41, 42, 43, 50, 51, 52, 53]
+                drop_cols_by_name = [
+                    df_raw.columns[i] for i in drop_col_indices if i < len(df_raw.columns)
+                    ]
+                df_raw = df_raw.drop(columns=drop_col_indices)
             subject_intervals = self.filtered_index[self.filtered_index['subject_id'] == subject_num]
 
             #interplote code should be a separate function under class and should be applied here on df_raw
@@ -228,8 +255,8 @@ class HeartbeatDataProcessor:
         Parameters:
         - window_df (pd.DataFrame): samples for one window, with named PAMAP2 columns.
         - streams (list of str or None): which Section III-C streams to compute, any of
-          'time', 'amplitude', 'frequency'. None uses the constructor's include_amplitude /
-          include_frequency for the default ('time' is on by default).
+          'time', 'amplitude', 'frequency' (or alias 'fft'). None uses the constructor's
+          include_amplitude / include_frequency for the default ('time' is on by default).
         - channels (list of str or None): which feature channels to include, a subset of
           FEATURE_CHANNELS (heart rate and the 27 motion axes). None means all. Amplitude and
           axis-correlation features need a full triad, so they are produced only for sensors
@@ -251,7 +278,16 @@ class HeartbeatDataProcessor:
             if self.include_frequency:
                 streams.append('frequency')
         streams = self._resolve_selection(streams, self.STREAMS, 'stream')
+        # Accept 'fft' as a stream alias for the frequency-domain STFT features.
+        streams = ['frequency' if stream == 'fft' else stream for stream in streams]
+        # Keep order while removing duplicates after alias resolution.
+        streams = list(dict.fromkeys(streams))
         channels = self._resolve_selection(channels, self.FEATURE_CHANNELS, 'channel')
+        # The upstream preprocessing may intentionally drop some channels (e.g. heart_rate).
+        # Keep only channels present in this window to avoid KeyError on selection.
+        channels = [channel for channel in channels if channel in window_df.columns]
+        if not channels:
+            raise ValueError("none of the requested channels exist in the window dataframe")
 
         # The custom functions below cover features with no direct pandas/scipy name.
         # They take a single column (a Series) because that is what agg hands them.
@@ -410,6 +446,20 @@ class HeartbeatDataProcessor:
             raise ValueError("the requested streams and channels produced no features")
         return pd.concat(feature_parts)
 
+    def extract_random_forest_features(self, window_df, channels=None, stats=None):
+        """
+        Extract the Random Forest feature set: time-domain + FFT-domain only.
+
+        This explicitly excludes amplitude-domain features while keeping the full
+        per-channel time statistics and STFT-magnitude (frequency/FFT) statistics.
+        """
+        return self.extract_features(
+            window_df,
+            streams=['time', 'frequency'],
+            channels=channels,
+            stats=stats,
+        )
+
     def _amplitude_signals(self, window_df, sensors=None):
         """
         Amplitude M = sqrt(x^2 + y^2 + z^2) per triaxial sensor (Section III-C, eq. 3).
@@ -512,7 +562,33 @@ class HeartbeatDataProcessor:
     def _filter_df(self, df_raw):
         # Low-pass filter the motion channels (paper, Section III-A). Heart rate and the
         # metadata columns are left untouched.
-        signal_filter = HeartRateFilter(kernel_size=5, cutoff=11.0, fs=self.sample_rate, order=5)
-        for column in self.MOTION_AXES:
+        nyquist = 0.5 * float(self.sample_rate)
+        if nyquist <= 0:
+            raise ValueError(f"sample_rate must be positive, got {self.sample_rate}")
+
+        # SciPy butter() requires 0 < cutoff < Nyquist. Reduced-frequency mode lowers the
+        # sample rate, so clamp the requested cutoff to a safe fraction of Nyquist.
+        target_cutoff = 16.0
+        cutoff = min(target_cutoff, 0.95 * nyquist)
+        if self.verbose and cutoff < target_cutoff:
+            print(
+                f"Adjusted low-pass cutoff from {target_cutoff}Hz to {cutoff:.3f}Hz "
+                f"for sample_rate={self.sample_rate}Hz."
+            )
+
+        signal_filter = HeartRateFilter(
+            kernel_size=5,
+            cutoff=cutoff,
+            fs=self.sample_rate,
+            order=5
+        )
+        available_motion_axes = [column for column in self.MOTION_AXES if column in df_raw.columns]
+        missing_motion_axes = [column for column in self.MOTION_AXES if column not in df_raw.columns]
+        if self.verbose and missing_motion_axes:
+            print(
+                f"Skipping {len(missing_motion_axes)} missing motion axes in filtering "
+                "(likely dropped by preprocessing mode)."
+            )
+        for column in available_motion_axes:
             df_raw[column] = signal_filter.fit_transform(df_raw[column]).ravel()
         return df_raw
