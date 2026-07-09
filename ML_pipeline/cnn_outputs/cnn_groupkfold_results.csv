@@ -1,0 +1,4 @@
+,n_classes,mean_fold_accuracy,std_fold_accuracy,accuracy,precision_weighted,recall_weighted,f1_weighted
+raw,12.0,0.742,0.0543,0.7419,0.7435,0.7419,0.7389
+grouped9,9.0,0.8313,0.0348,0.8313,0.8426,0.8313,0.8333
+lmh,3.0,0.8863,0.016,0.8863,0.8863,0.8863,0.8848
