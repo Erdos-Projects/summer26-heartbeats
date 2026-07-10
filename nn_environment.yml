@@ -1,0 +1,30 @@
+# Environment for the neural-network work (the CNN in ML_pipeline/cnn_training.ipynb).
+#
+# The default project environment (erdos_ds_environment) does NOT run the CNN: its tensorflow
+# aborts on import. This separate environment runs it.
+#
+# Create it once:
+#     conda env create -f nn_environment.yml
+#     conda activate heartbeats_nn
+# then run ML_pipeline/cnn_training.ipynb with this environment's kernel.
+#
+# Versions below are the ones the CNN was developed and run against.
+name: heartbeats_nn
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy==2.2.6
+      - scipy==1.17.1
+      - pandas==2.3.3
+      - scikit-learn==1.9.0
+      - matplotlib==3.11.0
+      - seaborn==0.13.2
+      - tensorflow==2.21.0
+      - keras==3.15.0
+      - jupyter==1.1.1
+      - ipykernel==7.3.0
+      - nbformat==5.10.4
+      - nbconvert==7.17.1
