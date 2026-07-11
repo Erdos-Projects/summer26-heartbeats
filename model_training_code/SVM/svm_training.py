@@ -26,7 +26,7 @@ from sklearn.metrics import classification_report, accuracy_score
 # Load the extracted features dataset
 
 print("Loading features.csv...")
-full_df = pd.read_csv('features.csv') #
+full_df = pd.read_csv('../../data/features.csv') #
 
 # Dictionary to map numerical PAMAP2 IDs to readable labels
 activity_names = {
